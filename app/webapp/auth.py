@@ -8,11 +8,15 @@ hash = HMAC_SHA256(secret_key, data_check_string). Затем сверяем, ч
 import hashlib
 import hmac
 import json
+import time
 from urllib.parse import parse_qsl
 
 from fastapi import Header, HTTPException, status
 
 from app.config.settings import get_settings
+
+# Максимальный возраст initData — защита от повторного использования (replay).
+INIT_DATA_MAX_AGE = 24 * 3600
 
 
 def validate_init_data(init_data: str) -> dict | None:
@@ -31,6 +35,13 @@ def validate_init_data(init_data: str) -> dict | None:
     secret_key = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
     calc_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(calc_hash, received_hash):
+        return None
+    # Защита от replay: initData не должен быть старше суток.
+    try:
+        auth_date = int(parsed.get("auth_date", "0"))
+    except ValueError:
+        return None
+    if auth_date <= 0 or (time.time() - auth_date) > INIT_DATA_MAX_AGE:
         return None
     return parsed
 
