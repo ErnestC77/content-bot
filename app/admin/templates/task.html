@@ -7,6 +7,7 @@
 <div class="card">
     <h2>Редактирование</h2>
     <form method="post" action="/admin/tasks/{{ task.id }}/edit">
+        <input type="hidden" name="_csrf" value="{{ request.state.csrf_token }}">
         <div class="row">
             <div>
                 <label>Дата публикации</label>
@@ -40,12 +41,15 @@
         </p>
     </form>
     <form class="inline" method="post" action="/admin/tasks/{{ task.id }}/run">
+        <input type="hidden" name="_csrf" value="{{ request.state.csrf_token }}">
         <button type="submit">▶️ Запустить на сегодня</button>
     </form>
     <form class="inline" method="post" action="/admin/tasks/{{ task.id }}/toggle">
+        <input type="hidden" name="_csrf" value="{{ request.state.csrf_token }}">
         <button class="secondary" type="submit">{{ 'Выключить' if task.is_active else 'Включить' }}</button>
     </form>
     <form class="inline" method="post" action="/admin/tasks/{{ task.id }}/delete" onsubmit="return confirm('Удалить задачу?')">
+        <input type="hidden" name="_csrf" value="{{ request.state.csrf_token }}">
         <button class="danger" type="submit">🗑 Удалить</button>
     </form>
 </div>

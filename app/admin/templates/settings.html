@@ -4,6 +4,7 @@
 <h1>Настройки</h1>
 <div class="card">
     <form method="post" action="/admin/settings">
+        <input type="hidden" name="_csrf" value="{{ request.state.csrf_token }}">
         <div class="row">
             <div>
                 <label>Telegram ID владельца</label>

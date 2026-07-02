@@ -5,7 +5,6 @@ import logging
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -74,21 +73,45 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Content Bot", lifespan=lifespan)
 
 
+CSRF_COOKIE = "csrf_token"
+
+
 @app.middleware("http")
 async def admin_csrf_guard(request: Request, call_next):
-    """Same-origin проверка для изменяющих запросов админки.
+    """CSRF-защита админки по схеме double-submit cookie.
 
-    Basic Auth сам по себе уязвим к CSRF: браузер шлёт учётку автоматически.
-    Требуем, чтобы небезопасные методы к /admin приходили с того же origin.
+    Basic Auth сам по себе уязвим к CSRF (браузер шлёт учётку автоматически).
+    Токен кладётся в HttpOnly-cookie и во все формы скрытым полем `_csrf`;
+    на небезопасные запросы значения должны совпасть. Атакующий с чужого сайта
+    не может прочитать HttpOnly-cookie, значит и подобрать поле не сможет.
+    Защита не зависит от заголовков Origin/Referer.
     """
-    if request.method not in ("GET", "HEAD", "OPTIONS") and request.url.path.startswith("/admin"):
-        source = request.headers.get("origin") or request.headers.get("referer")
-        # Блокируем только явный кросс-доменный источник. Если браузер не прислал
-        # ни Origin, ни Referer (строгая privacy-политика) — не мешаем владельцу:
-        # для CSRF-атаки источник как раз был бы прислан и не совпал бы.
-        if source and urlparse(source).netloc != request.url.netloc:
+    if not request.url.path.startswith("/admin"):
+        return await call_next(request)
+
+    cookie_token = request.cookies.get(CSRF_COOKIE)
+
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        form = await request.form()
+        form_token = form.get("_csrf")
+        if not (
+            cookie_token
+            and form_token
+            and secrets.compare_digest(str(cookie_token), str(form_token))
+        ):
             return Response(status_code=403, content="CSRF check failed")
-    return await call_next(request)
+        return await call_next(request)
+
+    # Безопасные методы: гарантируем наличие токена и отдаём его шаблонам.
+    token = cookie_token or secrets.token_urlsafe(32)
+    request.state.csrf_token = token
+    response = await call_next(request)
+    if not cookie_token:
+        secure = request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+        response.set_cookie(
+            CSRF_COOKIE, token, httponly=True, samesite="strict", secure=secure, max_age=86400
+        )
+    return response
 
 
 app.include_router(admin_router)

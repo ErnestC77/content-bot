@@ -6,6 +6,7 @@
 <div class="card">
     <h2>Добавить задачу</h2>
     <form method="post" action="/admin/tasks">
+        <input type="hidden" name="_csrf" value="{{ request.state.csrf_token }}">
         <div class="row">
             <div>
                 <label>Дата публикации</label>
@@ -53,6 +54,7 @@
             <td>{{ '✅' if t.is_active else '⛔' }}</td>
             <td>
                 <form class="inline" method="post" action="/admin/tasks/{{ t.id }}/toggle">
+                    <input type="hidden" name="_csrf" value="{{ request.state.csrf_token }}">
                     <button class="secondary" type="submit">{{ 'Выкл' if t.is_active else 'Вкл' }}</button>
                 </form>
             </td>
