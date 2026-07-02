@@ -2,8 +2,10 @@
 
 import asyncio
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -44,8 +46,14 @@ async def lifespan(app: FastAPI):
         if not base:
             raise RuntimeError("BOT_MODE=webhook, но WEBHOOK_URL/RENDER_EXTERNAL_URL не заданы")
         webhook_url = f"{base}/webhook/{settings.webhook_secret}"
-        await bot.set_webhook(webhook_url, drop_pending_updates=True)
-        logger.info("Webhook установлен: %s", webhook_url)
+        # secret_token: Telegram будет слать заголовок X-Telegram-Bot-Api-Secret-Token
+        # только со своей стороны — так подделать запрос нельзя, даже зная URL.
+        await bot.set_webhook(
+            webhook_url,
+            secret_token=settings.webhook_secret,
+            drop_pending_updates=True,
+        )
+        logger.info("Webhook установлен на %s/webhook/***", base)
     else:
         await bot.delete_webhook(drop_pending_updates=True)
         polling_task = asyncio.create_task(dp.start_polling(bot, handle_signals=False))
@@ -62,6 +70,22 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Content Bot", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def admin_csrf_guard(request: Request, call_next):
+    """Same-origin проверка для изменяющих запросов админки.
+
+    Basic Auth сам по себе уязвим к CSRF: браузер шлёт учётку автоматически.
+    Требуем, чтобы небезопасные методы к /admin приходили с того же origin.
+    """
+    if request.method not in ("GET", "HEAD", "OPTIONS") and request.url.path.startswith("/admin"):
+        origin = request.headers.get("origin") or request.headers.get("referer")
+        if not origin or urlparse(origin).netloc != request.url.netloc:
+            return Response(status_code=403, content="CSRF check failed")
+    return await call_next(request)
+
+
 app.include_router(admin_router)
 
 static_dir = Path(__file__).parent / "admin" / "static"
@@ -80,7 +104,12 @@ async def root():
 
 @app.post("/webhook/{secret}")
 async def telegram_webhook(secret: str, request: Request):
-    if secret != settings.webhook_secret:
+    # Constant-time сравнение секрета в пути + обязательный заголовок от Telegram.
+    header_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not (
+        secrets.compare_digest(secret, settings.webhook_secret)
+        and secrets.compare_digest(header_token, settings.webhook_secret)
+    ):
         return Response(status_code=403)
     data = await request.json()
     update = Update.model_validate(data, context={"bot": bot})
