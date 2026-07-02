@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Задача #{{ task.id }}{% endblock %}
+{% block content %}
+<p><a href="/admin">← К календарю</a></p>
+<h1>Задача #{{ task.id }} <span class="status">{{ task.status }}</span></h1>
+
+<div class="card">
+    <h2>Редактирование</h2>
+    <form method="post" action="/admin/tasks/{{ task.id }}/edit">
+        <div class="row">
+            <div>
+                <label>Дата публикации</label>
+                <input type="date" name="publish_date" value="{{ task.publish_date.isoformat() }}" required>
+            </div>
+            <div>
+                <label>Время</label>
+                <input type="time" name="publish_time" value="{{ task.publish_time.strftime('%H:%M') if task.publish_time else '' }}">
+            </div>
+            <div>
+                <label>Повтор</label>
+                <select name="recurrence">
+                    <option value="none" {{ 'selected' if task.recurrence == 'none' }}>Разово</option>
+                    <option value="weekly" {{ 'selected' if task.recurrence == 'weekly' }}>Еженедельно</option>
+                </select>
+            </div>
+        </div>
+        <label>Рубрика</label>
+        <select name="rubric">
+            <option value="">— выбрать —</option>
+            {% for r in rubrics %}<option value="{{ r }}" {{ 'selected' if task.rubric == r }}>{{ r }}</option>{% endfor %}
+        </select>
+        <label>Тема</label>
+        <input type="text" name="topic" value="{{ task.topic }}">
+        <label>Цель поста</label>
+        <input type="text" name="goal" value="{{ task.goal }}">
+        <label>Описание задачи</label>
+        <textarea name="description">{{ task.description }}</textarea>
+        <p>
+            <button type="submit">Сохранить</button>
+        </p>
+    </form>
+    <form class="inline" method="post" action="/admin/tasks/{{ task.id }}/run">
+        <button type="submit">▶️ Запустить на сегодня</button>
+    </form>
+    <form class="inline" method="post" action="/admin/tasks/{{ task.id }}/toggle">
+        <button class="secondary" type="submit">{{ 'Выключить' if task.is_active else 'Включить' }}</button>
+    </form>
+    <form class="inline" method="post" action="/admin/tasks/{{ task.id }}/delete" onsubmit="return confirm('Удалить задачу?')">
+        <button class="danger" type="submit">🗑 Удалить</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Ответы владельца</h2>
+    {% for a in task.answers %}<p class="log">{{ a.answer_text }}</p>{% else %}<p>Нет ответов.</p>{% endfor %}
+</div>
+
+<div class="card">
+    <h2>Медиа ({{ task.media|length }})</h2>
+    {% for m in task.media %}
+        <p class="log">{{ m.media_type }} — <code>{{ m.telegram_file_id[:30] }}…</code></p>
+    {% else %}<p>Медиа нет.</p>{% endfor %}
+</div>
+
+<div class="card">
+    <h2>Версии поста ({{ task.posts|length }})</h2>
+    {% for p in task.posts %}
+        <h3>Версия {{ p.version_number }} <small>({{ p.ai_provider }}/{{ p.ai_model }})</small></h3>
+        <pre class="post">{{ p.text }}</pre>
+    {% else %}<p>Постов ещё нет.</p>{% endfor %}
+</div>
+
+<div class="card">
+    <h2>Логи согласования</h2>
+    {% for l in task.logs %}
+        <p class="log">{{ l.created_at.strftime('%Y-%m-%d %H:%M') }} — <b>{{ l.action }}</b>
+        {% if l.old_status %}({{ l.old_status }} → {{ l.new_status }}){% endif %}
+        {% if l.comment %}— {{ l.comment }}{% endif %}</p>
+    {% else %}<p>Логов нет.</p>{% endfor %}
+</div>
+{% endblock %}
