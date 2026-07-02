@@ -12,8 +12,7 @@ services:
           property: connectionString
       - key: BOT_MODE
         value: webhook
-      - key: WEBHOOK_URL
-        sync: false
+      # WEBHOOK_URL не задаём — приложение возьмёт публичный адрес из RENDER_EXTERNAL_URL
       - key: WEBHOOK_SECRET
         generateValue: true
       - key: BOT_TOKEN
