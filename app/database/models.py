@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     Time,
@@ -144,7 +145,10 @@ class TaskMedia(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     task_id: Mapped[int] = mapped_column(ForeignKey("content_tasks.id"), index=True)
-    telegram_file_id: Mapped[str] = mapped_column(String(512))
+    # либо telegram_file_id (из чата), либо content+mime_type (загрузка из Mini App)
+    telegram_file_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    content: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     media_type: Mapped[str] = mapped_column(String(20))
     caption: Mapped[str | None] = mapped_column(Text, nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)

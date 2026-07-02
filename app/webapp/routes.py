@@ -4,7 +4,7 @@ import logging
 from datetime import date, time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -12,9 +12,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
-from app.database.models import ContentTask, TaskStatus
+from app.database.models import ContentTask, TaskMedia, TaskStatus
 from app.database.session import get_session, get_session_dependency
 from app.services import approval, content_tasks
+from app.services import media as media_service
 from app.services.content_tasks import STATUS_LABELS
 from app.services.settings_store import (
     KEY_AI_MODEL,
@@ -72,6 +73,8 @@ def _task_dict(task: ContentTask, full: bool = False) -> dict:
         "status_label": STATUS_LABELS.get(task.status, task.status),
         "is_active": task.is_active,
         "media_count": len(task.media),
+        "media": [{"id": m.id, "type": m.media_type} for m in task.media],
+        "text": task.final_text or (latest.text if latest else ""),
         "preview": (task.final_text or (latest.text if latest else ""))[:200],
         "can_approve": task.status == TaskStatus.WAITING_FOR_APPROVAL.value,
         "can_generate": task.status == TaskStatus.SCHEDULED.value,
@@ -240,6 +243,36 @@ async def cancel(task_id: int, session: AsyncSession = Depends(get_session_depen
     except approval.InvalidTransitionError:
         await session.rollback()
         return {"error": "cannot cancel"}
+    return {"ok": True}
+
+
+MAX_UPLOAD = 20 * 1024 * 1024  # 20 МБ
+
+
+@api.post("/tasks/{task_id}/media")
+async def upload_media(task_id: int, file: UploadFile = File(...)):
+    content = await file.read()
+    if len(content) > MAX_UPLOAD:
+        return {"ok": False, "message": "Файл больше 20 МБ."}
+    async with get_session() as session:
+        task = await content_tasks.get_task(session, task_id)
+        if task is None:
+            return {"error": "not found"}
+        mt = media_service.media_type_from_mime(file.content_type or "")
+        await media_service.add_media_bytes(
+            session, task, content, file.content_type or "application/octet-stream", mt
+        )
+        await session.commit()
+        count = len(task.media)
+    return {"ok": True, "media_count": count}
+
+
+@api.post("/tasks/{task_id}/media/{media_id}/delete")
+async def delete_media(task_id: int, media_id: int, session: AsyncSession = Depends(get_session_dependency)):
+    m = await session.get(TaskMedia, media_id)
+    if m and m.task_id == task_id:
+        await session.delete(m)
+        await session.commit()
     return {"ok": True}
 
 

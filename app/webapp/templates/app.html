@@ -30,13 +30,27 @@
   .topic { font-weight: 600; }
   .meta { color: var(--hint); font-size: 13px; margin-top: 2px; }
   .status { display: inline-block; font-size: 12px; margin-top: 6px; }
-  .preview { font-size: 13px; color: var(--text); margin-top: 8px; white-space: pre-wrap;
-             max-height: 8em; overflow: auto; opacity: .85; }
+  .preview { font-size: 14px; color: var(--text); margin-top: 8px; white-space: pre-wrap;
+             line-height: 1.4; max-height: 320px; overflow: auto;
+             background: var(--bg); border-radius: 8px; padding: 10px; }
+  .media-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { font-size: 12px; background: var(--bg); border: 1px solid var(--hint); border-radius: 14px;
+          padding: 4px 8px; display: flex; align-items: center; gap: 6px; }
+  .chip b { cursor: pointer; color: #c53030; }
+  .addmedia { margin-top: 8px; }
+  .addmedia label { display: inline-block; font-size: 13px; color: var(--link);
+                    border: 1px dashed var(--hint); border-radius: 8px; padding: 8px 10px; cursor: pointer; margin: 0; }
+  .addmedia input { display: none; }
   .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-  button.act { border: none; border-radius: 8px; padding: 8px 10px; font-size: 13px; cursor: pointer;
+  button.act { border: none; border-radius: 8px; padding: 9px 12px; font-size: 14px; cursor: pointer;
                background: var(--btn); color: var(--btn-text); }
+  button.act:disabled { opacity: .5; }
   button.act.sec { background: transparent; color: var(--link); border: 1px solid var(--hint); }
   button.act.danger { background: #c53030; color: #fff; }
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+           background: rgba(0,0,0,.85); color: #fff; padding: 10px 16px; border-radius: 10px;
+           font-size: 14px; z-index: 40; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90%; }
+  #toast.show { opacity: 1; }
   textarea, input, select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--hint);
             background: var(--bg); color: var(--text); font-size: 14px; font-family: inherit; margin-top: 6px; }
   label { font-size: 13px; color: var(--hint); display: block; margin-top: 10px; }
@@ -68,6 +82,7 @@
   </div>
   <div id="tab-settings" class="hidden"></div>
 </main>
+<div id="toast"></div>
 
 <div class="modal-bg" id="modal-bg">
   <div class="modal">
@@ -118,28 +133,54 @@ document.querySelectorAll(".tabs button").forEach(b => {
 
 function esc(s) { return (s||"").replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
-function taskCard(t, kind) {
+let toastTimer;
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg; el.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("show"), 2500);
+}
+// Мгновенно блокирует нажатую кнопку и выполняет действие
+async function run(btn, fn) {
+  if (btn) { btn.disabled = true; btn.dataset.t = btn.textContent; btn.textContent = "…"; }
+  try { await fn(); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = btn.dataset.t; } }
+}
+
+function mediaChips(t) {
+  const canEdit = t.can_approve || t.can_generate;
+  let chips = t.media.map(m =>
+    `<span class="chip">${m.type === 'video' ? '🎬' : m.type === 'photo' ? '🖼' : '📄'}${canEdit ? ` <b onclick="delMedia(${t.id},${m.id})">✕</b>` : ''}</span>`
+  ).join("");
+  if (canEdit) {
+    chips += `<span class="addmedia"><label>➕ фото/видео
+      <input type="file" accept="image/*,video/*" onchange="uploadMedia(${t.id}, this)"></label></span>`;
+  }
+  return `<div class="media-chips">${chips}</div>`;
+}
+
+function taskCard(t) {
   let actions = "";
   if (t.can_approve) {
     actions = `
-      <button class="act" onclick="doApprove(${t.id})">✅ Одобрить</button>
+      <button class="act" onclick="doApprove(${t.id}, this)">✅ Одобрить</button>
       <button class="act sec" onclick="doRevise(${t.id})">✏️ Правки</button>
-      <button class="act sec" onclick="doAlt(${t.id})">🔄 Вариант</button>
+      <button class="act sec" onclick="doAlt(${t.id}, this)">🔄 Вариант</button>
       <button class="act danger" onclick="doCancel(${t.id})">❌ Отмена</button>`;
   } else if (t.can_generate) {
-    actions = `<button class="act" onclick="doGenerate(${t.id})">⚙️ Сгенерировать</button>
+    actions = `<button class="act" onclick="doGenerate(${t.id}, this)">⚙️ Сгенерировать</button>
                <button class="act sec" onclick="doEdit(${t.id})">✎ Изменить</button>
                <button class="act danger" onclick="doDelete(${t.id})">🗑</button>`;
   }
   if (t.can_publish) {
     actions += `<button class="act" onclick="doPublishNow(${t.id})">📢 Опубликовать сейчас</button>`;
   }
-  const preview = t.preview ? `<div class="preview">${esc(t.preview)}</div>` : "";
+  const body = t.text ? `<div class="preview">${esc(t.text)}</div>` : "";
   return `<div class="card">
     <div class="top"><div><div class="topic">${esc(t.topic) || "(без темы)"}</div>
-      <div class="meta">#${t.id} · ${t.publish_date} ${t.publish_time||""} ${t.media_count?("· 📎"+t.media_count):""}</div></div></div>
+      <div class="meta">#${t.id} · ${t.publish_date} ${t.publish_time||""}</div></div></div>
     <div class="status">${esc(t.status_label)}</div>
-    ${preview}
+    ${body}
+    ${mediaChips(t)}
     <div class="actions">${actions}</div>
   </div>`;
 }
@@ -148,22 +189,35 @@ async function loadTasks() {
   const data = await api("/tasks");
   const d = document.getElementById("tab-drafts");
   const r = document.getElementById("tab-ready");
-  d.innerHTML = data.drafts.length ? data.drafts.map(t => taskCard(t,"draft")).join("") : '<div class="empty">Черновиков нет</div>';
-  r.innerHTML = data.ready.length ? data.ready.map(t => taskCard(t,"ready")).join("") : '<div class="empty">Готовых постов нет</div>';
+  d.innerHTML = data.drafts.length ? data.drafts.map(taskCard).join("") : '<div class="empty">Черновиков нет</div>';
+  r.innerHTML = data.ready.length ? data.ready.map(taskCard).join("") : '<div class="empty">Готовых постов нет</div>';
 }
 
-async function doApprove(id){ const res = await api(`/tasks/${id}/approve`,"POST"); tg.showAlert(res.message||"Одобрено"); loadTasks(); }
-async function doAlt(id){ await api(`/tasks/${id}/alternative`,"POST"); tg.showAlert("Готовлю другой вариант — придёт в чат."); loadTasks(); }
-async function doGenerate(id){ const res = await api(`/tasks/${id}/generate`,"POST"); tg.showAlert(res.ok?"Черновик готовится — придёт в чат.":"Не удалось (AI?)"); loadTasks(); }
-function doPublishNow(id){ tg.showConfirm("Опубликовать в канал сейчас?", async ok => { if(ok){ const res = await api(`/tasks/${id}/publish_now`,"POST"); tg.showAlert(res.message||"Готово"); loadTasks(); } }); }
-async function doCancel(id){ tg.showConfirm("Отменить задачу?", async ok => { if(ok){ await api(`/tasks/${id}/cancel`,"POST"); loadTasks(); } }); }
-async function doDelete(id){ tg.showConfirm("Удалить задачу?", async ok => { if(ok){ await api(`/tasks/${id}/delete`,"POST"); loadTasks(); } }); }
+function doApprove(id, btn){ run(btn, async () => { const res = await api(`/tasks/${id}/approve`,"POST"); toast(res.message||"Одобрено"); await loadTasks(); }); }
+function doAlt(id, btn){ run(btn, async () => { await api(`/tasks/${id}/alternative`,"POST"); toast("Готовлю другой вариант…"); await loadTasks(); }); }
+function doGenerate(id, btn){ run(btn, async () => { const res = await api(`/tasks/${id}/generate`,"POST"); toast(res.ok?"Черновик готовится…":"Не удалось (AI?)"); await loadTasks(); }); }
+function doPublishNow(id){ tg.showConfirm("Опубликовать в канал сейчас?", async ok => { if(ok){ toast("Публикую…"); const res = await api(`/tasks/${id}/publish_now`,"POST"); toast(res.message||"Готово"); await loadTasks(); } }); }
+function doCancel(id){ tg.showConfirm("Отменить задачу?", async ok => { if(ok){ await api(`/tasks/${id}/cancel`,"POST"); toast("Отменено"); await loadTasks(); } }); }
+function doDelete(id){ tg.showConfirm("Удалить задачу?", async ok => { if(ok){ await api(`/tasks/${id}/delete`,"POST"); toast("Удалено"); await loadTasks(); } }); }
+
+async function uploadMedia(id, input){
+  const file = input.files[0]; if(!file) return;
+  toast("Загружаю…");
+  const fd = new FormData(); fd.append("file", file);
+  const res = await fetch(`/api/webapp/tasks/${id}/media`, {
+    method: "POST", headers: { "X-Telegram-Init-Data": INIT }, body: fd });
+  if(!res.ok){ toast("Ошибка загрузки"); return; }
+  const j = await res.json();
+  toast(j.ok ? "Медиа добавлено" : (j.message||"Не вышло"));
+  await loadTasks();
+}
+async function delMedia(taskId, mediaId){ await api(`/tasks/${taskId}/media/${mediaId}/delete`,"POST"); toast("Удалено"); await loadTasks(); }
 
 function doRevise(id){
   openModal("Что изменить?", '<textarea id="rev" rows="4" placeholder="Опишите правки"></textarea>',
     async () => { const c = document.getElementById("rev").value.trim();
-      if(!c) return; await api(`/tasks/${id}/revise`,"POST",{comment:c});
-      tg.showAlert("Новая версия готовится — придёт в чат."); loadTasks(); });
+      if(!c) return; toast("Готовлю новую версию…"); await api(`/tasks/${id}/revise`,"POST",{comment:c});
+      await loadTasks(); });
 }
 
 async function doEdit(id){

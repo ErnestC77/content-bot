@@ -10,7 +10,7 @@ import logging
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import InputMediaPhoto, InputMediaVideo
+from aiogram.types import BufferedInputFile, InputMediaPhoto, InputMediaVideo
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -77,12 +77,13 @@ async def _send_post(bot: Bot, channel_id: str, text: str, task: ContentTask) ->
     if len(media) == 1:
         item = media[0]
         caption = text if len(text) <= TELEGRAM_CAPTION_LIMIT else None
+        src = _media_source(item)
         if item.media_type == MediaType.PHOTO.value:
-            await bot.send_photo(chat_id=channel_id, photo=item.telegram_file_id, caption=caption)
+            await bot.send_photo(chat_id=channel_id, photo=src, caption=caption)
         elif item.media_type == MediaType.VIDEO.value:
-            await bot.send_video(chat_id=channel_id, video=item.telegram_file_id, caption=caption)
+            await bot.send_video(chat_id=channel_id, video=src, caption=caption)
         else:
-            await bot.send_document(chat_id=channel_id, document=item.telegram_file_id, caption=caption)
+            await bot.send_document(chat_id=channel_id, document=src, caption=caption)
         if caption is None:
             await _send_long_text(bot, channel_id, text)
         return
@@ -92,13 +93,22 @@ async def _send_post(bot: Bot, channel_id: str, text: str, task: ContentTask) ->
     group = []
     for idx, item in enumerate(media):
         item_caption = caption if idx == 0 else None
+        src = _media_source(item)
         if item.media_type == MediaType.VIDEO.value:
-            group.append(InputMediaVideo(media=item.telegram_file_id, caption=item_caption))
+            group.append(InputMediaVideo(media=src, caption=item_caption))
         else:
-            group.append(InputMediaPhoto(media=item.telegram_file_id, caption=item_caption))
+            group.append(InputMediaPhoto(media=src, caption=item_caption))
     await bot.send_media_group(chat_id=channel_id, media=group)
     if caption is None:
         await _send_long_text(bot, channel_id, text)
+
+
+def _media_source(item):
+    """Источник для отправки: telegram_file_id или загруженные байты."""
+    if item.telegram_file_id:
+        return item.telegram_file_id
+    ext = {"image/jpeg": "jpg", "image/png": "png", "video/mp4": "mp4"}.get(item.mime_type or "", "bin")
+    return BufferedInputFile(item.content or b"", filename=f"media_{item.id}.{ext}")
 
 
 async def _send_long_text(bot: Bot, channel_id: str, text: str) -> None:
