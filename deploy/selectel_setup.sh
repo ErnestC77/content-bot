@@ -30,16 +30,12 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y ca-certificates curl gnupg git ufw nginx certbot python3-certbot-nginx
 
-echo "==> Установка Docker (если ещё не установлен)"
+echo "==> Установка Docker"
+# download.docker.com иногда недоступен с сети Selectel (та же категория проблемы,
+# что и с api.telegram.org) — ставим Docker из штатных репозиториев Ubuntu, без
+# обращения к download.docker.com. docker.io = движок, docker-compose-v2 = `docker compose`.
 if ! command -v docker >/dev/null 2>&1; then
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-  chmod a+r /etc/apt/keyrings/docker.asc
-  echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-    $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-  apt-get update -y
-  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  apt-get install -y docker.io docker-compose-v2
 fi
 systemctl enable --now docker
 
