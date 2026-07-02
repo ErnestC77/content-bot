@@ -57,10 +57,25 @@ async def _remember_channel(bot, chat_id: int, title: str) -> None:
         logger.exception("Не удалось уведомить владельца о канале")
 
 
+async def _owner_is_admin(bot, chat_id: int) -> bool:
+    """Проверяет, что владелец бота — админ/создатель указанного чата."""
+    try:
+        member = await bot.get_chat_member(chat_id, get_settings().owner_telegram_id)
+    except Exception:
+        return False
+    return member.status in ("administrator", "creator")
+
+
 @router.my_chat_member()
 async def on_bot_status_changed(event: ChatMemberUpdated) -> None:
-    """Бота добавили/повысили в канале — сохраняем его ID автоматически."""
+    """Бота добавили/повысили в канале — сохраняем ID, но только если это сделал владелец.
+
+    Эти апдейты идут мимо OwnerOnlyMiddleware, поэтому проверяем инициатора вручную,
+    иначе кто угодно мог бы добавить бота в свой канал и перехватить настройку.
+    """
     if event.chat.type != "channel":
+        return
+    if event.from_user is None or event.from_user.id != get_settings().owner_telegram_id:
         return
     if event.new_chat_member.status in ("administrator", "creator"):
         await _remember_channel(event.bot, event.chat.id, event.chat.title)
@@ -68,10 +83,13 @@ async def on_bot_status_changed(event: ChatMemberUpdated) -> None:
 
 @router.channel_post()
 async def on_channel_post(message: Message) -> None:
-    """Резервный путь: если канал ещё не задан, определяем его по первому посту."""
+    """Резервный путь: задаём канал по посту, только если он ещё не задан
+    и владелец является админом этого канала (у channel_post нет from_user)."""
     async with get_session() as session:
         if await get_channel_id(session):
             return
+    if not await _owner_is_admin(message.bot, message.chat.id):
+        return
     await _remember_channel(message.bot, message.chat.id, message.chat.title)
 
 
