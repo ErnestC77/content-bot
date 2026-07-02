@@ -126,15 +126,17 @@ class BulkBody(BaseModel):
 
 @api.post("/tasks/bulk")
 async def bulk_add(body: BulkBody, session: AsyncSession = Depends(get_session_dependency)):
+    """Строки «дата [время] — тема» задают дату/время ПОДГОТОВКИ ЧЕРНОВИКА.
+    Дата публикации вычисляется автоматически как черновик + лид-тайм."""
     s = get_settings()
     raw = await get_setting(session, KEY_DEFAULT_PUBLISH_TIME, s.default_publish_time)
     hh, mm = (int(x) for x in raw.split(":"))
+    default_t = time(hh, mm)
     lead_raw = await get_setting(session, KEY_DRAFT_LEAD_DAYS, str(s.draft_lead_days))
     try:
         lead_days = max(0, int(lead_raw))
     except ValueError:
         lead_days = s.draft_lead_days
-    default_t = time(hh, mm)
     created, errors = await content_tasks.bulk_create_tasks(
         session, body.text, default_t, lead_days, default_t
     )

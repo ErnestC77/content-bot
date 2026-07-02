@@ -91,6 +91,11 @@
   <div id="tab-ready" class="hidden"></div>
   <div id="tab-add" class="hidden">
     <label>Список постов (по одному на строку): <code>ДД-ММ-ГГГГ [ЧЧ:ММ] — тема</code></label>
+    <p style="color:var(--hint);font-size:13px;margin:4px 0 0">
+      Указанные дата и время — это когда бот подготовит <b>черновик</b> (задаст вопросы
+      и сгенерирует пост). Дата публикации в канал вычислится автоматически
+      (черновик + лид-тайм из настроек) и её можно поменять отдельно в карточке поста.
+    </p>
     <textarea id="bulk" rows="8" placeholder="05-07-2026 — Как выбрать велосипед&#10;06-07-2026 10:00 — Разбор ошибок"></textarea>
     <button class="primary" id="bulk-submit">Создать посты</button>
     <div id="bulk-result" class="meta"></div>
@@ -153,14 +158,15 @@ function esc(s) { return (s||"").replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;'
 function fmtDate(iso) { if(!iso) return ""; const p=iso.split("-"); return p.length===3 ? `${p[2]}-${p[1]}-${p[0]}` : iso; }
 
 const MONTHS = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
-function monthCalendar(tasks) {
+function monthCalendar(tasks, dateField) {
+  dateField = dateField || "publish_date";
   const now = new Date();
   const year = now.getFullYear(), month = now.getMonth();
   const startDow = (new Date(year, month, 1).getDay() + 6) % 7; // Пн=0
   const days = new Date(year, month + 1, 0).getDate();
   const todayIso = `${year}-${String(month+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
   const byDay = {};
-  tasks.forEach(t => { (byDay[t.publish_date] = byDay[t.publish_date] || []).push(t); });
+  tasks.forEach(t => { const d = t[dateField] || t.publish_date; (byDay[d] = byDay[d] || []).push(t); });
   let html = `<div class="cal-title">${MONTHS[month]} ${year}</div><div class="cal-grid">`;
   ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"].forEach(d => html += `<div class="cal-dow">${d}</div>`);
   for (let i = 0; i < startDow; i++) html += `<div class="cal-cell empty"></div>`;
@@ -270,7 +276,7 @@ async function loadTasks() {
   const data = await api("/tasks");
   const list = data.drafts.length ? data.drafts.map(taskCard).join("") : '<div class="empty">Черновиков нет</div>';
   document.getElementById("tab-drafts").innerHTML =
-    monthCalendar(data.drafts) + '<div class="section-h">Список</div>' + list;
+    monthCalendar(data.drafts, "draft_date") + '<div class="section-h">Список</div>' + list;
   lastReady = data.ready;
   renderReady();
 }

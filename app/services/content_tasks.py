@@ -105,29 +105,30 @@ def parse_schedule_line(line: str, default_time: time) -> tuple[date, time, str]
 
 
 async def bulk_create_tasks(
-    session: AsyncSession, text: str, default_time: time, lead_days: int, draft_time: time
+    session: AsyncSession, text: str, default_draft_time: time, lead_days: int, default_publish_time: time
 ) -> tuple[list[ContentTask], list[str]]:
     """Создаёт задачи по строкам «дата [время] — тема».
 
-    Дата/время подготовки черновика вычисляются как публикация минус lead_days
-    (в draft_time), но дальше их можно редактировать независимо. Возвращает
-    (созданные, ошибки).
+    Введённые дата/время — это дата/время ПОДГОТОВКИ ЧЕРНОВИКА (когда бот
+    сгенерирует пост и пришлёт на согласование), а не дата публикации. Дата
+    публикации вычисляется как черновик + lead_days в default_publish_time;
+    обе даты дальше можно редактировать независимо. Возвращает (созданные, ошибки).
     """
     created: list[ContentTask] = []
     errors: list[str] = []
     for raw in text.splitlines():
         if not raw.strip():
             continue
-        parsed = parse_schedule_line(raw, default_time)
+        parsed = parse_schedule_line(raw, default_draft_time)
         if parsed is None:
             errors.append(raw.strip())
             continue
         d, t, topic = parsed
         task = ContentTask(
-            publish_date=d,
-            publish_time=t,
-            draft_date=d - timedelta(days=lead_days),
-            draft_time=draft_time,
+            draft_date=d,
+            draft_time=t,
+            publish_date=d + timedelta(days=lead_days),
+            publish_time=default_publish_time,
             topic=topic,
             status=TaskStatus.SCHEDULED.value,
             is_active=True,
