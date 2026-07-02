@@ -8,16 +8,19 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      # $$POSTGRES_USER — переменная окружения контейнера db (Compose экранирование $$),
+      # чтобы healthcheck не был захардкожен на конкретного пользователя postgres/content_bot
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   app:
     build: .
+    # DATABASE_URL берётся ТОЛЬКО из .env — раньше здесь был захардкожен
+    # postgres:postgres, который перебивал .env (explicit environment: приоритетнее
+    # env_file:) и ломал подключение при других учётных данных БД (напр. на VDS-деплое).
     env_file: .env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/content_bot
     ports:
       - "8000:8000"
     depends_on:
