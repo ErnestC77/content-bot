@@ -199,6 +199,27 @@ function mediaChips(t) {
   return `<div class="media-chips">${chips}</div>`;
 }
 
+function questionsBlock(t) {
+  if (!t.can_answer) return "";
+  const inputs = t.questions.map((q, i) =>
+    `<label>${esc(q)}</label><textarea rows="2" data-qidx="${i}" placeholder="Ваш ответ (можно пропустить)"></textarea>`
+  ).join("");
+  return `<div style="margin-top:10px">${inputs}
+    <div class="actions">
+      <button class="act" onclick="doSubmitAnswers(${t.id}, this)">✅ Ответить и сгенерировать</button>
+      <button class="act sec" onclick="doSkipAnswers(${t.id}, this)">⏭ Пропустить</button>
+    </div>
+  </div>`;
+}
+
+function quoteToggle(t) {
+  const canEdit = !["published", "cancelled", "publishing"].includes(t.status);
+  if (!canEdit) return t.is_quote ? '<div class="meta">🔖 Цитата</div>' : "";
+  return `<label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;color:var(--hint)">
+    <input type="checkbox" style="width:auto;margin:0" ${t.is_quote ? "checked" : ""} onchange="doToggleQuote(${t.id})"> 🔖 Отправить как цитату
+  </label>`;
+}
+
 function taskCard(t) {
   let actions = "";
   if (t.can_approve) {
@@ -208,7 +229,7 @@ function taskCard(t) {
       <button class="act sec" onclick="doAlt(${t.id}, this)">🔄 Вариант</button>
       <button class="act danger" onclick="doCancel(${t.id})">❌ Отмена</button>`;
   } else if (t.can_generate) {
-    actions = `<button class="act" onclick="doGenerate(${t.id}, this)">⚙️ Сгенерировать</button>
+    actions = `<button class="act" onclick="doGenerate(${t.id}, this)">⚙️ Задать вопросы</button>
                <button class="act sec" onclick="doEdit(${t.id})">✎ Изменить</button>
                <button class="act danger" onclick="doDelete(${t.id})">🗑</button>`;
   }
@@ -224,6 +245,8 @@ function taskCard(t) {
       <div class="meta">${meta}</div></div></div>
     <div class="status">${esc(t.status_label)}</div>
     ${body}
+    ${questionsBlock(t)}
+    ${quoteToggle(t)}
     ${mediaChips(t)}
     <div class="actions">${actions}</div>
   </div>`;
@@ -254,20 +277,49 @@ async function loadTasks() {
 
 function doApprove(id, btn){ run(btn, async () => { const res = await api(`/tasks/${id}/approve`,"POST"); toast(res.message||"Одобрено"); await loadTasks(); }); }
 function doAlt(id, btn){ run(btn, async () => { await api(`/tasks/${id}/alternative`,"POST"); toast("Готовлю другой вариант…"); await loadTasks(); }); }
-function doGenerate(id, btn){ run(btn, async () => { const res = await api(`/tasks/${id}/generate`,"POST"); toast(res.ok?"Черновик готовится…":"Не удалось (AI?)"); await loadTasks(); }); }
+function doGenerate(id, btn){ run(btn, async () => { const res = await api(`/tasks/${id}/generate`,"POST"); toast(res.ok?"Готовлю вопросы…":"Не удалось (AI?)"); await loadTasks(); }); }
 function doPublishNow(id){ tg.showConfirm("Опубликовать в канал сейчас?", async ok => { if(ok){ toast("Публикую…"); const res = await api(`/tasks/${id}/publish_now`,"POST"); toast(res.message||"Готово"); await loadTasks(); } }); }
+
+function doSubmitAnswers(id, btn){
+  run(btn, async () => {
+    const card = btn.closest(".card");
+    const answers = Array.from(card.querySelectorAll("textarea[data-qidx]")).map(el => el.value);
+    toast("Генерирую черновик с учётом ответов…");
+    await api(`/tasks/${id}/answers`, "POST", { answers });
+    await loadTasks();
+  });
+}
+function doSkipAnswers(id, btn){
+  run(btn, async () => {
+    toast("Генерирую черновик…");
+    await api(`/tasks/${id}/skip_answers`, "POST");
+    await loadTasks();
+  });
+}
+async function doToggleQuote(id){ await api(`/tasks/${id}/quote`, "POST"); toast("Сохранено"); }
 function doCancel(id){ tg.showConfirm("Отменить задачу?", async ok => { if(ok){ await api(`/tasks/${id}/cancel`,"POST"); toast("Отменено"); await loadTasks(); } }); }
 function doDelete(id){ tg.showConfirm("Удалить задачу?", async ok => { if(ok){ await api(`/tasks/${id}/delete`,"POST"); toast("Удалено"); await loadTasks(); } }); }
 
 async function uploadMedia(id, input){
   const file = input.files[0]; if(!file) return;
-  toast("Загружаю…");
+  toast(`Загружаю ${(file.size/1024/1024).toFixed(1)} МБ…`);
   const fd = new FormData(); fd.append("file", file);
-  const res = await fetch(`/api/webapp/tasks/${id}/media`, {
-    method: "POST", headers: { "X-Telegram-Init-Data": INIT }, body: fd });
-  if(!res.ok){ toast("Ошибка загрузки"); return; }
+  let res;
+  try {
+    res = await fetch(`/api/webapp/tasks/${id}/media`, {
+      method: "POST", headers: { "X-Telegram-Init-Data": INIT }, body: fd });
+  } catch (e) {
+    tg.showAlert("Не удалось загрузить файл: обрыв соединения. Попробуйте ещё раз.");
+    input.value = ""; return;
+  }
+  if(!res.ok){
+    tg.showAlert(`Ошибка загрузки (код ${res.status}). Попробуйте файл поменьше или другой формат.`);
+    input.value = ""; return;
+  }
   const j = await res.json();
-  toast(j.ok ? "Медиа добавлено" : (j.message||"Не вышло"));
+  if (!j.ok) { tg.showAlert(j.message || "Не удалось добавить медиа."); input.value = ""; return; }
+  toast("Медиа добавлено ✓");
+  input.value = "";
   await loadTasks();
 }
 async function delMedia(taskId, mediaId){ await api(`/tasks/${taskId}/media/${mediaId}/delete`,"POST"); toast("Удалено"); await loadTasks(); }

@@ -6,6 +6,7 @@
 Если обновлено 0 строк — публикация уже идёт или выполнена, выходим.
 """
 
+import html
 import logging
 
 from aiogram import Bot
@@ -68,39 +69,62 @@ async def _check_bot_is_admin(bot: Bot, channel_id: str) -> None:
         )
 
 
+def _wrap_quote(text: str) -> str:
+    """Оборачивает текст в нативную цитату Telegram (HTML blockquote)."""
+    return f"<blockquote>{html.escape(text)}</blockquote>"
+
+
 async def _send_post(bot: Bot, channel_id: str, text: str, task: ContentTask) -> None:
     media = list(task.media)
+    parse_mode = "HTML" if task.is_quote else None
+
     if not media:
-        await bot.send_message(chat_id=channel_id, text=text)
+        display = _wrap_quote(text) if task.is_quote else text
+        await bot.send_message(chat_id=channel_id, text=display, parse_mode=parse_mode)
         return
+
+    caption, rest = _split_caption(text, task.is_quote)
 
     if len(media) == 1:
         item = media[0]
-        caption = text if len(text) <= TELEGRAM_CAPTION_LIMIT else None
         src = _media_source(item)
         if item.media_type == MediaType.PHOTO.value:
-            await bot.send_photo(chat_id=channel_id, photo=src, caption=caption)
+            await bot.send_photo(chat_id=channel_id, photo=src, caption=caption, parse_mode=parse_mode)
         elif item.media_type == MediaType.VIDEO.value:
-            await bot.send_video(chat_id=channel_id, video=src, caption=caption)
+            await bot.send_video(chat_id=channel_id, video=src, caption=caption, parse_mode=parse_mode)
         else:
-            await bot.send_document(chat_id=channel_id, document=src, caption=caption)
-        if caption is None:
-            await _send_long_text(bot, channel_id, text)
+            await bot.send_document(chat_id=channel_id, document=src, caption=caption, parse_mode=parse_mode)
+        if rest:
+            await _send_long_text(bot, channel_id, rest, task.is_quote)
         return
 
-    # Несколько медиа -> media group. Caption у первого, если помещается.
-    caption = text if len(text) <= TELEGRAM_CAPTION_LIMIT else None
+    # Несколько медиа -> media group. Caption у первого.
     group = []
     for idx, item in enumerate(media):
         item_caption = caption if idx == 0 else None
         src = _media_source(item)
         if item.media_type == MediaType.VIDEO.value:
-            group.append(InputMediaVideo(media=src, caption=item_caption))
+            group.append(InputMediaVideo(media=src, caption=item_caption, parse_mode=parse_mode))
         else:
-            group.append(InputMediaPhoto(media=src, caption=item_caption))
+            group.append(InputMediaPhoto(media=src, caption=item_caption, parse_mode=parse_mode))
     await bot.send_media_group(chat_id=channel_id, media=group)
-    if caption is None:
-        await _send_long_text(bot, channel_id, text)
+    if rest:
+        await _send_long_text(bot, channel_id, rest, task.is_quote)
+
+
+def _split_caption(text: str, is_quote: bool) -> tuple[str, str | None]:
+    """Если текст (с учётом HTML-обёртки цитаты, если включена) помещается в подпись
+    Telegram (1024 симв.) — возвращает его целиком.
+
+    Иначе на самом медиа оставляем короткую пометку (без обрыва текста на полуслове),
+    а полный текст сразу следующим сообщением — так пост воспринимается цельным,
+    а не как медиа и текст «сами по себе».
+    """
+    display = _wrap_quote(text) if is_quote else text
+    if len(display) <= TELEGRAM_CAPTION_LIMIT:
+        return display, None
+    marker = "📄 Текст поста — сообщением ниже 👇"
+    return (_wrap_quote(marker) if is_quote else marker), text
 
 
 def _media_source(item):
@@ -111,9 +135,14 @@ def _media_source(item):
     return BufferedInputFile(item.content or b"", filename=f"media_{item.id}.{ext}")
 
 
-async def _send_long_text(bot: Bot, channel_id: str, text: str) -> None:
-    for i in range(0, len(text), TELEGRAM_MESSAGE_LIMIT):
-        await bot.send_message(chat_id=channel_id, text=text[i : i + TELEGRAM_MESSAGE_LIMIT])
+async def _send_long_text(bot: Bot, channel_id: str, text: str, is_quote: bool = False) -> None:
+    # При цитате оставляем запас под теги <blockquote></blockquote> в каждом куске.
+    chunk_size = TELEGRAM_MESSAGE_LIMIT - 25 if is_quote else TELEGRAM_MESSAGE_LIMIT
+    parse_mode = "HTML" if is_quote else None
+    for i in range(0, len(text), chunk_size):
+        chunk = text[i : i + chunk_size]
+        display = _wrap_quote(chunk) if is_quote else chunk
+        await bot.send_message(chat_id=channel_id, text=display, parse_mode=parse_mode)
 
 
 async def publish_task(bot: Bot, session: AsyncSession, task: ContentTask) -> PublishResult:

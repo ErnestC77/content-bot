@@ -43,7 +43,7 @@ RUBRICS = [
 ]
 
 DRAFT_STATUSES = {
-    TaskStatus.SCHEDULED.value, TaskStatus.GENERATING.value,
+    TaskStatus.SCHEDULED.value, TaskStatus.WAITING_FOR_ANSWERS.value, TaskStatus.GENERATING.value,
     TaskStatus.WAITING_FOR_APPROVAL.value, TaskStatus.REVISION_REQUESTED.value,
 }
 READY_STATUSES = {
@@ -79,15 +79,19 @@ def _task_dict(task: ContentTask, full: bool = False) -> dict:
         "media": [{"id": m.id, "type": m.media_type} for m in task.media],
         "text": task.final_text or (latest.text if latest else ""),
         "preview": (task.final_text or (latest.text if latest else ""))[:200],
+        "is_quote": task.is_quote,
         "can_approve": task.status == TaskStatus.WAITING_FOR_APPROVAL.value,
         "can_generate": task.status == TaskStatus.SCHEDULED.value,
+        "can_answer": task.status == TaskStatus.WAITING_FOR_ANSWERS.value,
         "can_publish": task.status in (TaskStatus.APPROVED.value, TaskStatus.PUBLISH_FAILED.value),
+        "questions": task.pending_questions.split("\n") if task.pending_questions else [],
     }
     if full:
         data["text"] = latest.text if latest else ""
         data["versions"] = [
             {"n": p.version_number, "text": p.text, "model": p.ai_model} for p in task.posts
         ]
+        data["answers"] = [a.answer_text for a in task.answers]
         data["logs"] = [
             {"action": l.action, "old": l.old_status, "new": l.new_status,
              "comment": l.comment, "at": l.created_at.strftime("%Y-%m-%d %H:%M")}
@@ -199,9 +203,59 @@ async def toggle_task(task_id: int, session: AsyncSession = Depends(get_session_
 
 @api.post("/tasks/{task_id}/generate")
 async def generate_task(task_id: int, request: Request, owner: int = Depends(require_owner)):
-    from app.bot.flow import prepare_and_send_draft
-    ok = await prepare_and_send_draft(request.app.state.bot, task_id, owner)
+    """Задаёт наводящие вопросы (для задачи в scheduled)."""
+    from app.bot.flow import ask_questions
+    ok = await ask_questions(request.app.state.bot, task_id, owner)
     return {"ok": ok}
+
+
+class AnswersBody(BaseModel):
+    answers: list[str] = []
+
+
+@api.post("/tasks/{task_id}/answers")
+async def submit_answers(
+    task_id: int, body: AnswersBody, request: Request, owner: int = Depends(require_owner)
+):
+    """Сохраняет ответы владельца на наводящие вопросы и запускает генерацию черновика."""
+    from app.bot.flow import generate_from_answers
+    from app.database.models import TaskAnswer
+
+    async with get_session() as session:
+        task = await content_tasks.get_task(session, task_id)
+        if task is None or task.status != TaskStatus.WAITING_FOR_ANSWERS.value:
+            return {"ok": False, "message": "Задача не ожидает ответов."}
+        user = await content_tasks.ensure_owner_user(session, owner, "owner")
+        questions = task.pending_questions.split("\n") if task.pending_questions else []
+        for i, answer in enumerate(body.answers):
+            answer = answer.strip()
+            if not answer:
+                continue
+            q = questions[i] if i < len(questions) else ""
+            text = f"{q}\n{answer}" if q else answer
+            session.add(TaskAnswer(task_id=task_id, user_id=user.id, answer_text=text))
+        await session.commit()
+
+    ok = await generate_from_answers(request.app.state.bot, task_id, owner)
+    return {"ok": ok}
+
+
+@api.post("/tasks/{task_id}/skip_answers")
+async def skip_answers(task_id: int, request: Request, owner: int = Depends(require_owner)):
+    """Генерирует черновик сразу, без ответов на вопросы."""
+    from app.bot.flow import generate_from_answers
+    ok = await generate_from_answers(request.app.state.bot, task_id, owner)
+    return {"ok": ok}
+
+
+@api.post("/tasks/{task_id}/quote")
+async def toggle_quote(task_id: int, session: AsyncSession = Depends(get_session_dependency)):
+    task = await content_tasks.get_task(session, task_id)
+    if task is None:
+        return {"error": "not found"}
+    task.is_quote = not task.is_quote
+    await session.commit()
+    return {"ok": True, "is_quote": task.is_quote}
 
 
 @api.post("/tasks/{task_id}/approve")
@@ -273,24 +327,35 @@ async def cancel(task_id: int, session: AsyncSession = Depends(get_session_depen
     return {"ok": True}
 
 
-MAX_UPLOAD = 20 * 1024 * 1024  # 20 МБ
+# Реальный лимит Telegram Bot API на загрузку файла ботом — 50 МБ; берём с запасом.
+MAX_UPLOAD = 45 * 1024 * 1024
 
 
 @api.post("/tasks/{task_id}/media")
 async def upload_media(task_id: int, file: UploadFile = File(...)):
-    content = await file.read()
+    try:
+        content = await file.read()
+    except Exception:
+        logger.exception("Не удалось прочитать загружаемый файл task=%s", task_id)
+        return {"ok": False, "message": "Не удалось прочитать файл. Попробуйте ещё раз."}
+
+    if not content:
+        return {"ok": False, "message": "Файл пустой."}
     if len(content) > MAX_UPLOAD:
-        return {"ok": False, "message": "Файл больше 20 МБ."}
+        mb = len(content) / (1024 * 1024)
+        return {"ok": False, "message": f"Файл {mb:.1f} МБ — больше лимита в 45 МБ."}
+
     async with get_session() as session:
         task = await content_tasks.get_task(session, task_id)
         if task is None:
-            return {"error": "not found"}
-        mt = media_service.media_type_from_mime(file.content_type or "")
+            return {"ok": False, "message": "Задача не найдена."}
+        mt = media_service.media_type_from_mime(file.content_type, file.filename)
         await media_service.add_media_bytes(
             session, task, content, file.content_type or "application/octet-stream", mt
         )
         await session.commit()
-        count = len(task.media)
+        count = await media_service.count_media(session, task_id)
+    logger.info("Медиа добавлено: task=%s type=%s size=%s", task_id, mt.value, len(content))
     return {"ok": True, "media_count": count}
 
 

@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 # Человекочитаемые подписи статусов (для бота и админки).
 STATUS_LABELS = {
     TaskStatus.SCHEDULED.value: "⏳ ждёт генерации",
+    TaskStatus.WAITING_FOR_ANSWERS.value: "❓ ждёт ответов",
     TaskStatus.GENERATING.value: "⚙️ генерируется",
     TaskStatus.WAITING_FOR_APPROVAL.value: "🕓 на согласовании",
     TaskStatus.REVISION_REQUESTED.value: "✏️ правки",

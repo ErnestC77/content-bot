@@ -15,7 +15,7 @@ from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.bot.flow import prepare_and_send_draft
+from app.bot.flow import ask_questions
 from app.config.settings import get_settings
 from app.database.session import get_session
 from app.services import content_tasks, publishing
@@ -54,7 +54,7 @@ async def draft_generation_check(bot: Bot) -> None:
         return
     logger.info("draft_generation_check: генерирую черновики %s", ids)
     for task_id in ids:
-        await prepare_and_send_draft(bot, task_id, owner_id)
+        await ask_questions(bot, task_id, owner_id)
 
 
 async def publish_check(bot: Bot) -> None:

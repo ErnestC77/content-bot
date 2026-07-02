@@ -30,11 +30,32 @@ async def _default_time(session) -> time:
     return time(hh, mm)
 
 
-async def prepare_and_send_draft(bot: Bot, task_id: int, owner_id: int) -> bool:
-    """Генерирует черновик из темы и уведомляет владельца (без текста в чат)."""
+async def ask_questions(bot: Bot, task_id: int, owner_id: int) -> bool:
+    """Готовит 1–3 наводящих вопроса по теме и переводит задачу в ожидание ответов.
+
+    Вопросы помогают AI написать более точный черновик — владелец отвечает
+    в Mini App, после чего вызывается generate_from_answers().
+    """
     async with get_session() as session:
         task = await content_tasks.get_task(session, task_id)
         if task is None or not task.is_active or task.status != TaskStatus.SCHEDULED.value:
+            return False
+        topic = task.topic
+
+        questions = await content_tasks.generate_questions(session, task)
+        task.pending_questions = "\n".join(questions)
+        await approval.change_status(session, task, TaskStatus.WAITING_FOR_ANSWERS)
+        await session.commit()
+
+    await broadcast(bot, f"❓ Есть вопросы по посту «{topic}» — ответьте в панели, чтобы я подготовил черновик.")
+    return True
+
+
+async def generate_from_answers(bot: Bot, task_id: int, owner_id: int) -> bool:
+    """Генерирует черновик с учётом ответов владельца (или без них, если пропущено)."""
+    async with get_session() as session:
+        task = await content_tasks.get_task(session, task_id)
+        if task is None:
             return False
         default_time = await _default_time(session)
         pub_dt = content_tasks.publish_datetime(task, _tz(), default_time)
@@ -48,6 +69,7 @@ async def prepare_and_send_draft(bot: Bot, task_id: int, owner_id: int) -> bool:
             await session.rollback()
             await broadcast(bot, f"⚠️ AI недоступен — черновик по теме «{topic}» пока не создан.")
             return False
+        task.pending_questions = None
         await approval.change_status(
             session, task, TaskStatus.WAITING_FOR_APPROVAL,
             action=ApprovalAction.SENT_FOR_APPROVAL.value,
@@ -56,6 +78,11 @@ async def prepare_and_send_draft(bot: Bot, task_id: int, owner_id: int) -> bool:
 
     await broadcast(bot, f"🔔 Готов черновик к посту на {pub_dt:%d.%m %H:%M} — «{topic}». Откройте панель для согласования.")
     return True
+
+
+async def prepare_and_send_draft(bot: Bot, task_id: int, owner_id: int) -> bool:
+    """Обратная совместимость: сразу спрашивает наводящие вопросы (не генерирует)."""
+    return await ask_questions(bot, task_id, owner_id)
 
 
 async def regenerate_and_send(

@@ -97,6 +97,10 @@ class ContentTask(Base):
     # когда бот готовит черновик (независимо от даты/времени публикации)
     draft_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     draft_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    # наводящие вопросы текущего раунда (по одному на строку), пока не отвечены
+    pending_questions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # публиковать текст как цитату (Telegram blockquote)
+    is_quote: Mapped[bool] = mapped_column(Boolean, default=False)
     rubric: Mapped[str] = mapped_column(String(255), default="")
     topic: Mapped[str] = mapped_column(String(500), default="")
     goal: Mapped[str] = mapped_column(String(500), default="")
