@@ -52,6 +52,8 @@ async def lifespan(app: FastAPI):
             webhook_url,
             secret_token=settings.webhook_secret,
             drop_pending_updates=True,
+            # включаем my_chat_member/channel_post — по умолчанию Telegram их не шлёт
+            allowed_updates=dp.resolve_used_update_types(),
         )
         logger.info("Webhook установлен на %s/webhook/***", base)
     else:

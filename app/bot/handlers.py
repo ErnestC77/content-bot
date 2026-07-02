@@ -6,7 +6,7 @@ from datetime import date
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from app.bot import keyboards as kb
 from app.bot.flow import begin_task_flow
@@ -23,7 +23,7 @@ from app.database.models import (
 )
 from app.database.session import get_session
 from app.services import approval, audit, content_tasks, media, publishing
-from app.services.settings_store import get_channel_id
+from app.services.settings_store import KEY_CHANNEL_ID, get_channel_id, set_setting
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -38,6 +38,41 @@ async def _ensure_owner_user(session, telegram_id: int, name: str) -> User:
         session.add(user)
         await session.flush()
     return user
+
+
+# ---------- Авто-определение канала ----------
+
+
+async def _remember_channel(bot, chat_id: int, title: str) -> None:
+    async with get_session() as session:
+        await set_setting(session, KEY_CHANNEL_ID, str(chat_id))
+        await session.commit()
+    try:
+        await bot.send_message(
+            get_settings().owner_telegram_id,
+            f"✅ Канал подключён: {title or chat_id} (id {chat_id}).\n"
+            "Теперь я смогу публиковать в него одобренные посты.",
+        )
+    except Exception:
+        logger.exception("Не удалось уведомить владельца о канале")
+
+
+@router.my_chat_member()
+async def on_bot_status_changed(event: ChatMemberUpdated) -> None:
+    """Бота добавили/повысили в канале — сохраняем его ID автоматически."""
+    if event.chat.type != "channel":
+        return
+    if event.new_chat_member.status in ("administrator", "creator"):
+        await _remember_channel(event.bot, event.chat.id, event.chat.title)
+
+
+@router.channel_post()
+async def on_channel_post(message: Message) -> None:
+    """Резервный путь: если канал ещё не задан, определяем его по первому посту."""
+    async with get_session() as session:
+        if await get_channel_id(session):
+            return
+    await _remember_channel(message.bot, message.chat.id, message.chat.title)
 
 
 # ---------- Команды ----------
