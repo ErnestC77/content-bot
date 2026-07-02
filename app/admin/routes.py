@@ -54,8 +54,9 @@ async def index(request: Request, session: AsyncSession = Depends(get_session_de
         )
     )
     return templates.TemplateResponse(
+        request,
         "index.html",
-        {"request": request, "tasks": tasks, "rubrics": RUBRICS, "today": date.today()},
+        {"tasks": tasks, "rubrics": RUBRICS, "today": date.today()},
     )
 
 
@@ -93,7 +94,7 @@ async def task_detail(
     if task is None:
         return RedirectResponse("/admin", status_code=303)
     return templates.TemplateResponse(
-        "task.html", {"request": request, "task": task, "rubrics": RUBRICS}
+        request, "task.html", {"task": task, "rubrics": RUBRICS}
     )
 
 
@@ -166,7 +167,7 @@ async def settings_page(request: Request, session: AsyncSession = Depends(get_se
         "ai_model": await get_setting(session, KEY_AI_MODEL, s.ai_model),
         "system_prompt": await get_setting(session, KEY_SYSTEM_PROMPT, prompts.DEFAULT_SYSTEM_PROMPT),
     }
-    return templates.TemplateResponse("settings.html", {"request": request, "data": data})
+    return templates.TemplateResponse(request, "settings.html", {"data": data})
 
 
 @router.post("/settings")
