@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from app.bot import keyboards as kb
 from app.bot.flow import begin_task_flow
-from app.bot.states import TaskFlow
+from app.bot.states import AddMedia, AddPost, TaskFlow
 from app.config.settings import get_settings
 from app.database.models import (
     ApprovalAction,
@@ -110,11 +110,16 @@ async def cmd_start(message: Message) -> None:
     )
 
 
+def _admin_base() -> str:
+    s = get_settings()
+    return (s.effective_webhook_url or f"http://{s.app_host}:{s.app_port}").rstrip("/")
+
+
 @router.message(Command("admin"))
 async def cmd_admin(message: Message) -> None:
-    s = get_settings()
-    base = s.webhook_url or f"http://{s.app_host}:{s.app_port}"
-    await message.answer(f"Админ-панель: {base}/admin\nВход по логину и паролю из .env.")
+    await message.answer(
+        f"Админ-панель: {_admin_base()}/admin\nВход по логину и паролю из настроек."
+    )
 
 
 @router.message(Command("cancel"))
@@ -164,13 +169,12 @@ async def cmd_settings(message: Message) -> None:
     async with get_session() as session:
         channel = await get_channel_id(session)
     s = get_settings()
-    base = s.webhook_url or f"http://{s.app_host}:{s.app_port}"
     await message.answer(
         "Настройки:\n"
         f"— Владелец (Telegram ID): {s.owner_telegram_id}\n"
         f"— Канал: {channel or 'не задан'}\n"
         f"— AI-модель: {s.ai_model}\n\n"
-        f"Изменить настройки, системный промт и календарь можно в админ-панели: {base}/admin"
+        f"Изменить настройки, системный промт и календарь можно в админ-панели: {_admin_base()}/admin"
     )
 
 
@@ -187,11 +191,184 @@ async def cmd_channel(message: Message) -> None:
         )
 
 
+# ---------- Сценарий: создание поста прямо в боте ----------
+
+
+@router.message(Command("add"))
 @router.message(F.text == "➕ Добавить пост")
-async def cmd_add_post(message: Message) -> None:
-    s = get_settings()
-    base = s.webhook_url or f"http://{s.app_host}:{s.app_port}"
-    await message.answer(f"Добавить задачу в календарь удобнее в админ-панели: {base}/admin")
+async def cmd_add_post(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(AddPost.date)
+    await message.answer(
+        "Создаём новую задачу в календаре.\n\n"
+        "Шаг 1/5. На какую дату? Отправьте дату в формате ГГГГ-ММ-ДД "
+        "или нажмите «Сегодня».",
+        reply_markup=kb.date_today_kb(),
+    )
+
+
+async def _addpost_ask_rubric(message: Message, state: FSMContext) -> None:
+    await state.set_state(AddPost.rubric)
+    await message.answer("Шаг 2/5. Выберите рубрику:", reply_markup=kb.rubrics_kb())
+
+
+@router.callback_query(AddPost.date, F.data == kb.CB_DATE_TODAY)
+async def addpost_date_today(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(publish_date=date.today().isoformat())
+    await _addpost_ask_rubric(callback.message, state)
+    await callback.answer()
+
+
+@router.message(AddPost.date, F.text)
+async def addpost_date_text(message: Message, state: FSMContext) -> None:
+    try:
+        d = date.fromisoformat(message.text.strip())
+    except ValueError:
+        await message.answer("Не понял дату. Формат: ГГГГ-ММ-ДД, например 2026-07-05.",
+                             reply_markup=kb.date_today_kb())
+        return
+    await state.update_data(publish_date=d.isoformat())
+    await _addpost_ask_rubric(message, state)
+
+
+@router.callback_query(AddPost.rubric, F.data.startswith(f"{kb.CB_RUBRIC}:"))
+async def addpost_rubric(callback: CallbackQuery, state: FSMContext) -> None:
+    idx = int(callback.data.split(":", 1)[1])
+    rubric = kb.RUBRICS[idx] if 0 <= idx < len(kb.RUBRICS) else ""
+    await state.update_data(rubric=rubric)
+    await state.set_state(AddPost.topic)
+    await callback.message.answer(f"Рубрика: {rubric}\n\nШаг 3/5. Напишите тему поста.")
+    await callback.answer()
+
+
+@router.message(AddPost.topic, F.text)
+async def addpost_topic(message: Message, state: FSMContext) -> None:
+    await state.update_data(topic=message.text.strip())
+    await state.set_state(AddPost.goal)
+    await message.answer("Шаг 4/5. Какая цель поста? (что он должен дать читателю)")
+
+
+@router.message(AddPost.goal, F.text)
+async def addpost_goal(message: Message, state: FSMContext) -> None:
+    await state.update_data(goal=message.text.strip())
+    await state.set_state(AddPost.description)
+    await message.answer(
+        "Шаг 5/5. Добавьте описание/детали задачи или нажмите «Пропустить».",
+        reply_markup=kb.skip_kb(),
+    )
+
+
+async def _addpost_finish(message: Message, state: FSMContext, description: str) -> None:
+    data = await state.get_data()
+    async with get_session() as session:
+        task = ContentTask(
+            publish_date=date.fromisoformat(data["publish_date"]),
+            rubric=data.get("rubric", ""),
+            topic=data.get("topic", ""),
+            goal=data.get("goal", ""),
+            description=description,
+            status=TaskStatus.SCHEDULED.value,
+        )
+        session.add(task)
+        await session.commit()
+        task_id = task.id
+    await state.clear()
+    await message.answer(
+        f"✅ Задача #{task_id} создана на {data['publish_date']}.\n"
+        f"Рубрика: {data.get('rubric') or '—'} · Тема: {data.get('topic') or '—'}\n\n"
+        "Запустить подготовку поста можно кнопкой «📝 Задача на сегодня» (если дата сегодня) "
+        "или из админки. Прикрепить медиа — кнопкой «📎 Добавить медиа».",
+        reply_markup=kb.owner_menu(),
+    )
+
+
+@router.callback_query(AddPost.description, F.data == kb.CB_SKIP)
+async def addpost_desc_skip(callback: CallbackQuery, state: FSMContext) -> None:
+    await _addpost_finish(callback.message, state, "")
+    await callback.answer()
+
+
+@router.message(AddPost.description, F.text)
+async def addpost_desc_text(message: Message, state: FSMContext) -> None:
+    await _addpost_finish(message, state, message.text.strip())
+
+
+# ---------- Сценарий: добавить медиа к задаче ----------
+
+
+@router.message(F.text == "📎 Добавить медиа")
+async def cmd_add_media(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    async with get_session() as session:
+        tasks = await content_tasks.upcoming_tasks(session, limit=10)
+    # можно прикреплять медиа к задачам, которые ещё не опубликованы/не отменены
+    tasks = [t for t in tasks if t.status not in (TaskStatus.PUBLISHED.value, TaskStatus.CANCELLED.value)]
+    if not tasks:
+        await message.answer(
+            "Нет подходящих задач. Сначала создайте пост кнопкой «➕ Добавить пост».",
+            reply_markup=kb.owner_menu(),
+        )
+        return
+    await state.set_state(AddMedia.choosing_task)
+    await message.answer("К какой задаче добавить медиа?", reply_markup=kb.pick_task_kb(tasks))
+
+
+@router.callback_query(AddMedia.choosing_task, F.data.startswith(f"{kb.CB_PICKTASK}:"))
+async def addmedia_pick(callback: CallbackQuery, state: FSMContext) -> None:
+    task_id = int(callback.data.split(":", 1)[1])
+    await state.update_data(task_id=task_id)
+    await state.set_state(AddMedia.receiving)
+    await callback.message.answer(
+        f"Задача #{task_id}. Пришлите фото, видео или файл (можно несколько). "
+        "Когда закончите — нажмите «Готово».",
+        reply_markup=kb.addmedia_done_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(AddMedia.receiving, F.photo)
+async def addmedia_photo(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    async with get_session() as session:
+        task = await content_tasks.get_task(session, data["task_id"])
+        await media.add_media(session, task, message.photo[-1].file_id, MediaType.PHOTO, message.caption)
+        await session.commit()
+    await message.answer("Фото сохранено.", reply_markup=kb.addmedia_done_kb())
+
+
+@router.message(AddMedia.receiving, F.video)
+async def addmedia_video(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    async with get_session() as session:
+        task = await content_tasks.get_task(session, data["task_id"])
+        await media.add_media(session, task, message.video.file_id, MediaType.VIDEO, message.caption)
+        await session.commit()
+    await message.answer("Видео сохранено.", reply_markup=kb.addmedia_done_kb())
+
+
+@router.message(AddMedia.receiving, F.document)
+async def addmedia_document(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    async with get_session() as session:
+        task = await content_tasks.get_task(session, data["task_id"])
+        await media.add_media(session, task, message.document.file_id, MediaType.DOCUMENT, message.caption)
+        await session.commit()
+    await message.answer("Файл сохранён.", reply_markup=kb.addmedia_done_kb())
+
+
+@router.callback_query(AddMedia.receiving, F.data == kb.CB_ADDMEDIA_DONE)
+async def addmedia_done(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    task_id = data.get("task_id")
+    async with get_session() as session:
+        task = await content_tasks.get_task(session, task_id)
+        count = len(task.media) if task else 0
+    await state.clear()
+    await callback.message.answer(
+        f"Готово. К задаче #{task_id} прикреплено медиа: {count}.",
+        reply_markup=kb.owner_menu(),
+    )
+    await callback.answer()
 
 
 # ---------- Сценарий: ответы на вопросы ----------

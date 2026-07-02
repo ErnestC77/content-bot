@@ -11,3 +11,20 @@ class TaskFlow(StatesGroup):
     collecting_media = State()      # ждём фото/видео (опционально)
     waiting_for_approval = State()  # черновик отправлен, ждём решения
     waiting_for_revision = State()  # нажали «Правки», ждём текст правок
+
+
+class AddPost(StatesGroup):
+    """Создание задачи календаря прямо в боте."""
+
+    date = State()
+    rubric = State()
+    topic = State()
+    goal = State()
+    description = State()
+
+
+class AddMedia(StatesGroup):
+    """Добавление медиа к выбранной задаче вне основного сценария."""
+
+    choosing_task = State()
+    receiving = State()

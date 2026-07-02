@@ -82,8 +82,11 @@ async def admin_csrf_guard(request: Request, call_next):
     Требуем, чтобы небезопасные методы к /admin приходили с того же origin.
     """
     if request.method not in ("GET", "HEAD", "OPTIONS") and request.url.path.startswith("/admin"):
-        origin = request.headers.get("origin") or request.headers.get("referer")
-        if not origin or urlparse(origin).netloc != request.url.netloc:
+        source = request.headers.get("origin") or request.headers.get("referer")
+        # Блокируем только явный кросс-доменный источник. Если браузер не прислал
+        # ни Origin, ни Referer (строгая privacy-политика) — не мешаем владельцу:
+        # для CSRF-атаки источник как раз был бы прислан и не совпал бы.
+        if source and urlparse(source).netloc != request.url.netloc:
             return Response(status_code=403, content="CSRF check failed")
     return await call_next(request)
 
