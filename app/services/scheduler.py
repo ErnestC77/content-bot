@@ -19,6 +19,7 @@ from app.bot.flow import prepare_and_send_draft
 from app.config.settings import get_settings
 from app.database.session import get_session
 from app.services import content_tasks, publishing
+from app.services.notify import broadcast
 from app.services.settings_store import get_default_publish_time, get_draft_lead_days
 
 logger = logging.getLogger(__name__)
@@ -69,13 +70,7 @@ async def publish_check(bot: Bot) -> None:
             if task is None:
                 continue
             result = await publishing.publish_task(bot, session, task)
-        try:
-            await bot.send_message(
-                get_settings().owner_telegram_id,
-                f"Задача #{task_id}: {result.message}",
-            )
-        except Exception:
-            logger.exception("Не удалось уведомить о публикации задачи #%s", task_id)
+        await broadcast(bot, f"Задача #{task_id}: {result.message}")
 
 
 async def reminder_check(bot: Bot) -> None:
@@ -99,10 +94,7 @@ async def reminder_check(bot: Bot) -> None:
         if to_remind:
             await session.commit()
     for task_id in to_remind:
-        try:
-            await bot.send_message(owner_id, f"Задача #{task_id}. {REMINDER_TEXT}")
-        except Exception:
-            logger.exception("Не удалось отправить напоминание по задаче #%s", task_id)
+        await broadcast(bot, f"Задача #{task_id}. {REMINDER_TEXT}")
 
 
 def build_scheduler(bot: Bot) -> AsyncIOScheduler:

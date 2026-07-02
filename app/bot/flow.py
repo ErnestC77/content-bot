@@ -9,12 +9,12 @@ from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from app.config.settings import get_settings
 from app.database.models import ApprovalAction, TaskStatus
 from app.database.session import get_session
 from app.services import approval, content_tasks, publishing
+from app.services.notify import broadcast
 from app.services.settings_store import get_default_publish_time
 
 logger = logging.getLogger(__name__)
@@ -28,22 +28,6 @@ async def _default_time(session) -> time:
     raw = await get_default_publish_time(session)
     hh, mm = (int(x) for x in raw.split(":"))
     return time(hh, mm)
-
-
-def _panel_kb() -> InlineKeyboardMarkup | None:
-    base = get_settings().effective_webhook_url.rstrip("/")
-    if not base.startswith("https://"):
-        return None
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🗂 Открыть панель", web_app=WebAppInfo(url=f"{base}/webapp"))
-    ]])
-
-
-async def _notify(bot: Bot, owner_id: int, text: str) -> None:
-    try:
-        await bot.send_message(owner_id, text, reply_markup=_panel_kb())
-    except Exception:
-        logger.exception("Не удалось отправить уведомление владельцу")
 
 
 async def prepare_and_send_draft(bot: Bot, task_id: int, owner_id: int) -> bool:
@@ -62,7 +46,7 @@ async def prepare_and_send_draft(bot: Bot, task_id: int, owner_id: int) -> bool:
         except Exception:
             logger.exception("Не удалось сгенерировать черновик задачи #%s", task_id)
             await session.rollback()
-            await _notify(bot, owner_id, f"⚠️ AI недоступен — черновик по теме «{topic}» пока не создан.")
+            await broadcast(bot, f"⚠️ AI недоступен — черновик по теме «{topic}» пока не создан.")
             return False
         await approval.change_status(
             session, task, TaskStatus.WAITING_FOR_APPROVAL,
@@ -70,7 +54,7 @@ async def prepare_and_send_draft(bot: Bot, task_id: int, owner_id: int) -> bool:
         )
         await session.commit()
 
-    await _notify(bot, owner_id, f"🔔 Готов черновик к посту на {pub_dt:%d.%m %H:%M} — «{topic}». Откройте панель для согласования.")
+    await broadcast(bot, f"🔔 Готов черновик к посту на {pub_dt:%d.%m %H:%M} — «{topic}». Откройте панель для согласования.")
     return True
 
 
@@ -90,14 +74,14 @@ async def regenerate_and_send(
         except Exception:
             logger.exception("Не удалось сгенерировать новую версию задачи #%s", task_id)
             await session.rollback()
-            await _notify(bot, owner_id, "⚠️ AI недоступен — новую версию сделать не удалось.")
+            await broadcast(bot, "⚠️ AI недоступен — новую версию сделать не удалось.")
             return
         await approval.change_status(
             session, task, TaskStatus.WAITING_FOR_APPROVAL,
             action=ApprovalAction.SENT_FOR_APPROVAL.value,
         )
         await session.commit()
-    await _notify(bot, owner_id, "🔁 Новая версия готова — откройте панель.")
+    await broadcast(bot, "🔁 Новая версия готова — откройте панель.")
 
 
 async def approve_task(bot: Bot, task_id: int, user_tg_id: int, user_name: str) -> str:

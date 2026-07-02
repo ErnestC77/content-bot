@@ -17,6 +17,16 @@ async def is_authorized(session: AsyncSession, telegram_id: int) -> bool:
     return user is not None and user.is_active and user.role in _ROLES
 
 
+async def recipient_ids(session: AsyncSession) -> list[int]:
+    """Кому слать уведомления: владелец + все активные админы."""
+    ids = {get_settings().owner_telegram_id}
+    rows = await session.scalars(
+        select(User.telegram_id).where(User.is_active.is_(True)).where(User.role.in_(_ROLES))
+    )
+    ids.update(rows)
+    return list(ids)
+
+
 async def list_admins(session: AsyncSession) -> list[dict]:
     """Список доступа: владелец (неудаляемый) + активные админы."""
     owner_id = get_settings().owner_telegram_id
