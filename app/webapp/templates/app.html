@@ -51,15 +51,18 @@
            background: rgba(0,0,0,.85); color: #fff; padding: 10px 16px; border-radius: 10px;
            font-size: 14px; z-index: 40; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90%; }
   #toast.show { opacity: 1; }
-  textarea, input, select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--hint);
-            background: var(--bg); color: var(--text); font-size: 14px; font-family: inherit; margin-top: 6px; }
+  textarea, input, select { width: 100%; max-width: 100%; min-width: 0; padding: 10px; border-radius: 8px;
+            border: 1px solid var(--hint); background: var(--bg); color: var(--text); font-size: 16px;
+            font-family: inherit; margin-top: 6px; display: block; }
+  input[type="date"], input[type="time"] { -webkit-appearance: none; appearance: none; }
   label { font-size: 13px; color: var(--hint); display: block; margin-top: 10px; }
   .primary { width: 100%; padding: 13px; border: none; border-radius: 10px; background: var(--btn);
              color: var(--btn-text); font-size: 15px; font-weight: 600; margin-top: 14px; cursor: pointer; }
   .empty { color: var(--hint); text-align: center; padding: 24px; }
   .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none;
               align-items: center; justify-content: center; z-index: 20; padding: 16px; }
-  .modal { background: var(--bg); border-radius: 12px; padding: 16px; width: 100%; max-width: 440px; }
+  .modal { background: var(--bg); border-radius: 12px; padding: 16px; width: 100%; max-width: 440px;
+           max-height: 90vh; overflow-y: auto; overflow-x: hidden; }
   .hidden { display: none; }
 </style>
 </head>
