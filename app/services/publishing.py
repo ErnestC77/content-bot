@@ -79,11 +79,13 @@ async def _send_post(bot: Bot, channel_id: str, text: str, task: ContentTask) ->
     parse_mode = "HTML" if task.is_quote else None
 
     if not media:
-        display = _wrap_quote(text) if task.is_quote else text
-        await bot.send_message(chat_id=channel_id, text=display, parse_mode=parse_mode)
+        await _send_long_text(bot, channel_id, text, task.is_quote)
         return
 
-    caption, rest = _split_caption(text, task.is_quote)
+    # Фото/видео с текстом всегда уходят ОДНИМ сообщением: подпись Telegram
+    # ограничена 1024 символами (лимит платформы), поэтому длинный текст
+    # аккуратно обрезается по границе слова, а не разносится вторым сообщением.
+    caption = _build_caption(text, task.is_quote)
 
     if len(media) == 1:
         item = media[0]
@@ -94,8 +96,6 @@ async def _send_post(bot: Bot, channel_id: str, text: str, task: ContentTask) ->
             await bot.send_video(chat_id=channel_id, video=src, caption=caption, parse_mode=parse_mode)
         else:
             await bot.send_document(chat_id=channel_id, document=src, caption=caption, parse_mode=parse_mode)
-        if rest:
-            await _send_long_text(bot, channel_id, rest, task.is_quote)
         return
 
     # Несколько медиа -> media group. Caption у первого.
@@ -108,23 +108,29 @@ async def _send_post(bot: Bot, channel_id: str, text: str, task: ContentTask) ->
         else:
             group.append(InputMediaPhoto(media=src, caption=item_caption, parse_mode=parse_mode))
     await bot.send_media_group(chat_id=channel_id, media=group)
-    if rest:
-        await _send_long_text(bot, channel_id, rest, task.is_quote)
 
 
-def _split_caption(text: str, is_quote: bool) -> tuple[str, str | None]:
-    """Если текст (с учётом HTML-обёртки цитаты, если включена) помещается в подпись
-    Telegram (1024 симв.) — возвращает его целиком.
+def _truncate_at_word(text: str, limit: int) -> str:
+    """Обрезает текст до limit символов по границе слова (не рвёт на полуслове)."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    last_space = cut.rfind(" ")
+    if last_space > limit * 0.6:
+        cut = cut[:last_space]
+    return cut.rstrip() + "…"
 
-    Иначе на самом медиа оставляем короткую пометку (без обрыва текста на полуслове),
-    а полный текст сразу следующим сообщением — так пост воспринимается цельным,
-    а не как медиа и текст «сами по себе».
+
+def _build_caption(text: str, is_quote: bool) -> str:
+    """Подпись к медиа: весь текст, если помещается в лимит Telegram (1024 симв.),
+    иначе — обрезка по слову с многоточием. Полный текст поста при этом хранится
+    в БД и виден в Mini App без обрезки — обрезается только то, что уходит в канал.
     """
-    display = _wrap_quote(text) if is_quote else text
-    if len(display) <= TELEGRAM_CAPTION_LIMIT:
-        return display, None
-    marker = "📄 Текст поста — сообщением ниже 👇"
-    return (_wrap_quote(marker) if is_quote else marker), text
+    if is_quote:
+        overhead = len("<blockquote></blockquote>")
+        truncated = _truncate_at_word(text, TELEGRAM_CAPTION_LIMIT - overhead)
+        return _wrap_quote(truncated)
+    return _truncate_at_word(text, TELEGRAM_CAPTION_LIMIT)
 
 
 def _media_source(item):
