@@ -216,8 +216,19 @@ async def upcoming_tasks(session: AsyncSession, limit: int = 10) -> list[Content
     return list(result)
 
 
+# Признак устаревшей версии системного промта (из ранней редакции, где AI
+# просили самому дописывать блок согласования в конец черновика). Если в
+# сохранённом в settings промте это ещё встречается — считаем его устаревшим
+# и подменяем на актуальный дефолт, а не используем как есть.
+_STALE_PROMPT_MARKERS = ("ФОРМАТ СОГЛАСОВАНИЯ", "Каждый черновик заканчивай блоком")
+
+
 async def system_prompt(session: AsyncSession) -> str:
-    return await get_setting(session, KEY_SYSTEM_PROMPT, prompts.DEFAULT_SYSTEM_PROMPT)
+    value = await get_setting(session, KEY_SYSTEM_PROMPT, prompts.DEFAULT_SYSTEM_PROMPT)
+    if any(marker in value for marker in _STALE_PROMPT_MARKERS):
+        logger.warning("Обнаружен устаревший системный промт в settings — использую актуальный дефолт")
+        return prompts.DEFAULT_SYSTEM_PROMPT
+    return value
 
 
 async def generate_questions(session: AsyncSession, task: ContentTask) -> list[str]:
@@ -248,8 +259,33 @@ def extract_marked(text: str) -> str:
     start = text.find(prompts.POST_START)
     end = text.find(prompts.POST_END)
     if start != -1 and end != -1 and end > start:
-        return text[start + len(prompts.POST_START) : end].strip()
-    return text.strip()
+        text = text[start + len(prompts.POST_START) : end]
+    return _strip_approval_block(text.strip())
+
+
+# Признаки мета-блока согласования (кнопки/подписи), который иногда добавляет
+# модель по старой памяти/инерции — этот блок формирует сам бот в интерфейсе
+# согласования, в тексте ПОСТА ему быть не должно ни при каких условиях.
+_APPROVAL_MARKERS = (
+    "📋 Жду вашего решения",
+    "✅ Одобряю —",
+    "✏️ Правки —",
+    "🔄 Другой вариант —",
+    "❌ Отменить —",
+)
+
+
+def _strip_approval_block(text: str) -> str:
+    """Обрезает хвост текста, если в нём встретился мета-блок согласования."""
+    for marker in _APPROVAL_MARKERS:
+        idx = text.find(marker)
+        if idx == -1:
+            continue
+        head = text[:idx].rstrip()
+        # убрать горизонтальный разделитель ("———"/"---"), если он прямо перед меткой
+        head = re.sub(r"[—\-–]{2,}\s*$", "", head).rstrip()
+        return head
+    return text
 
 
 async def _next_version_number(task: ContentTask) -> int:
