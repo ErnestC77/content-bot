@@ -39,17 +39,25 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 systemctl enable --now docker
 
-echo "==> Проверка доступности Telegram API (Selectel иногда блокирует часть IP Telegram)"
-if ! curl -s --max-time 5 https://api.telegram.org >/dev/null; then
-  echo "api.telegram.org недоступен напрямую — прибиваю рабочий IP в /etc/hosts"
-  for ip in 149.154.167.220 149.154.175.55 149.154.171.5; do
-    if curl -s --max-time 5 --resolve "api.telegram.org:443:${ip}" https://api.telegram.org >/dev/null; then
-      grep -q "api.telegram.org" /etc/hosts && sed -i '/api.telegram.org/d' /etc/hosts
-      echo "${ip} api.telegram.org" >> /etc/hosts
-      echo "Использую IP ${ip} для api.telegram.org"
-      break
-    fi
-  done
+echo "==> Определение рабочего IPv4 для api.telegram.org"
+# На части сетей Selectel DNS отдаёт api.telegram.org только по IPv6, а маршрута
+# IPv6 нет — контейнер получает "Network is unreachable", даже если IPv4 к Telegram
+# полностью доступен. Поэтому ВСЕГДА пินуем конкретный рабочий IPv4 (не только
+# когда обычный curl не проходит) — и на хосте, и (что критично) внутри контейнера
+# через extra_hosts, поскольку /etc/hosts хоста в контейнер не пробрасывается.
+TG_IP=""
+for ip in 149.154.167.220 149.154.167.99 149.154.175.55 149.154.171.5 149.154.167.50; do
+  if curl -s --max-time 5 --resolve "api.telegram.org:443:${ip}" https://api.telegram.org >/dev/null; then
+    TG_IP="$ip"
+    echo "Рабочий IPv4 для api.telegram.org: ${ip}"
+    break
+  fi
+done
+if [ -n "$TG_IP" ]; then
+  grep -q "api.telegram.org" /etc/hosts && sed -i '/api.telegram.org/d' /etc/hosts
+  echo "${TG_IP} api.telegram.org" >> /etc/hosts
+else
+  echo "ВНИМАНИЕ: не нашёл рабочий IPv4 для api.telegram.org — бот может не подключиться к Telegram"
 fi
 
 echo "==> Клонирование репозитория"
@@ -91,6 +99,12 @@ services:
       POSTGRES_USER: content_bot
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: content_bot
+$(if [ -n "$TG_IP" ]; then cat <<EXTRA
+  app:
+    extra_hosts:
+      - "api.telegram.org:${TG_IP}"
+EXTRA
+fi)
 EOF
 
 echo "==> Открываю порты в файрволе (SSH + HTTP/HTTPS)"
