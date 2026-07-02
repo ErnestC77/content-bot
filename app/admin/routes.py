@@ -15,6 +15,7 @@ from app.ai import prompts
 from app.database.models import ContentTask, TaskStatus
 from app.database.session import get_session_dependency
 from app.services import content_tasks
+from app.services.content_tasks import STATUS_LABELS
 from app.services.settings_store import (
     KEY_AI_MODEL,
     KEY_AI_PROVIDER,
@@ -48,17 +49,41 @@ def _parse_time(value: str | None) -> time | None:
     return time(int(h), int(m))
 
 
+DRAFT_STATUSES = {
+    TaskStatus.SCHEDULED.value,
+    TaskStatus.GENERATING.value,
+    TaskStatus.WAITING_FOR_APPROVAL.value,
+    TaskStatus.REVISION_REQUESTED.value,
+}
+READY_STATUSES = {
+    TaskStatus.APPROVED.value,
+    TaskStatus.PUBLISHING.value,
+    TaskStatus.PUBLISHED.value,
+    TaskStatus.PUBLISH_FAILED.value,
+}
+
+
 @router.get("", response_class=HTMLResponse)
 async def index(request: Request, session: AsyncSession = Depends(get_session_dependency)):
     tasks = list(
         await session.scalars(
-            select(ContentTask).order_by(ContentTask.publish_date.desc(), ContentTask.publish_time)
+            select(ContentTask).order_by(ContentTask.publish_date, ContentTask.publish_time)
         )
     )
+    drafts = [t for t in tasks if t.status in DRAFT_STATUSES]
+    ready = [t for t in tasks if t.status in READY_STATUSES]
+    cancelled = [t for t in tasks if t.status == TaskStatus.CANCELLED.value]
     return templates.TemplateResponse(
         request,
         "index.html",
-        {"tasks": tasks, "rubrics": RUBRICS, "today": date.today()},
+        {
+            "drafts": drafts,
+            "ready": ready,
+            "cancelled": cancelled,
+            "rubrics": RUBRICS,
+            "today": date.today(),
+            "status_labels": STATUS_LABELS,
+        },
     )
 
 

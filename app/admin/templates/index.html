@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Календарь — Контент-бот{% endblock %}
 {% block content %}
-<h1>Календарь публикаций</h1>
+<h1>Контент-план</h1>
 
 <div class="card">
     <h2>Добавить задачу</h2>
@@ -24,44 +24,80 @@
                 </select>
             </div>
         </div>
-        <label>Рубрика</label>
+        <label>Рубрика (необязательно)</label>
         <select name="rubric">
-            <option value="">— выбрать —</option>
+            <option value="">— без рубрики —</option>
             {% for r in rubrics %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
         </select>
         <label>Тема</label>
         <input type="text" name="topic">
-        <label>Цель поста</label>
+        <label>Цель поста (необязательно)</label>
         <input type="text" name="goal">
-        <label>Описание задачи</label>
+        <label>Описание задачи (необязательно)</label>
         <textarea name="description"></textarea>
         <p><button type="submit">Добавить</button></p>
     </form>
 </div>
 
+{% macro row_actions(t) %}
+    <form class="inline" method="post" action="/admin/tasks/{{ t.id }}/toggle">
+        <input type="hidden" name="_csrf" value="{{ request.state.csrf_token }}">
+        <button class="secondary" type="submit">{{ 'Выкл' if t.is_active else 'Вкл' }}</button>
+    </form>
+{% endmacro %}
+
 <div class="card">
-    <h2>Задачи</h2>
+    <h2>📝 Календарь драфтов <small>({{ drafts|length }})</small></h2>
+    <p style="color:#718096;font-size:13px;margin-top:0">Посты в работе: ждут генерации, генерируются или на согласовании.</p>
     <table>
-        <tr><th>#</th><th>Дата</th><th>Время</th><th>Рубрика</th><th>Тема</th><th>Статус</th><th>Активна</th><th></th></tr>
-        {% for t in tasks %}
+        <tr><th>#</th><th>Публикация</th><th>Тема</th><th>Статус</th><th>Активна</th><th></th></tr>
+        {% for t in drafts %}
         <tr class="{{ '' if t.is_active else 'inactive' }}">
             <td>{{ t.id }}</td>
-            <td>{{ t.publish_date }}</td>
-            <td>{{ t.publish_time.strftime('%H:%M') if t.publish_time else '—' }}</td>
-            <td>{{ t.rubric or '—' }}</td>
+            <td>{{ t.publish_date }}<br><small>{{ t.publish_time.strftime('%H:%M') if t.publish_time else '—' }}</small></td>
             <td><a href="/admin/tasks/{{ t.id }}">{{ t.topic or '(без темы)' }}</a></td>
-            <td><span class="status">{{ t.status }}</span></td>
+            <td><span class="status">{{ status_labels.get(t.status, t.status) }}</span></td>
             <td>{{ '✅' if t.is_active else '⛔' }}</td>
-            <td>
-                <form class="inline" method="post" action="/admin/tasks/{{ t.id }}/toggle">
-                    <input type="hidden" name="_csrf" value="{{ request.state.csrf_token }}">
-                    <button class="secondary" type="submit">{{ 'Выкл' if t.is_active else 'Вкл' }}</button>
-                </form>
-            </td>
+            <td>{{ row_actions(t) }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="8">Задач пока нет.</td></tr>
+        <tr><td colspan="6">Черновиков нет.</td></tr>
         {% endfor %}
     </table>
 </div>
+
+<div class="card">
+    <h2>📢 Готовые посты <small>({{ ready|length }})</small></h2>
+    <p style="color:#718096;font-size:13px;margin-top:0">Одобрены и ждут публикации либо уже опубликованы.</p>
+    <table>
+        <tr><th>#</th><th>Публикация</th><th>Тема</th><th>Текст поста</th><th>Статус</th></tr>
+        {% for t in ready %}
+        <tr>
+            <td>{{ t.id }}</td>
+            <td>{{ t.publish_date }}<br><small>{{ t.publish_time.strftime('%H:%M') if t.publish_time else '—' }}</small></td>
+            <td><a href="/admin/tasks/{{ t.id }}">{{ t.topic or '(без темы)' }}</a></td>
+            <td><small>{{ (t.final_text or (t.posts[-1].text if t.posts else '')) | truncate(120) }}</small></td>
+            <td><span class="status">{{ status_labels.get(t.status, t.status) }}</span></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5">Готовых постов пока нет.</td></tr>
+        {% endfor %}
+    </table>
+</div>
+
+{% if cancelled %}
+<div class="card">
+    <h2>❌ Отменённые <small>({{ cancelled|length }})</small></h2>
+    <table>
+        <tr><th>#</th><th>Публикация</th><th>Тема</th></tr>
+        {% for t in cancelled %}
+        <tr class="inactive">
+            <td>{{ t.id }}</td>
+            <td>{{ t.publish_date }}</td>
+            <td><a href="/admin/tasks/{{ t.id }}">{{ t.topic or '(без темы)' }}</a></td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
 {% endblock %}

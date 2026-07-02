@@ -30,17 +30,7 @@ from app.services.settings_store import (
 logger = logging.getLogger(__name__)
 router = Router()
 
-STATUS_LABELS = {
-    TaskStatus.SCHEDULED.value: "⏳ ждёт генерации",
-    TaskStatus.GENERATING.value: "⚙️ генерируется",
-    TaskStatus.WAITING_FOR_APPROVAL.value: "🕓 на согласовании",
-    TaskStatus.REVISION_REQUESTED.value: "✏️ правки",
-    TaskStatus.APPROVED.value: "✅ одобрен, ждёт публикации",
-    TaskStatus.PUBLISHING.value: "📤 публикуется",
-    TaskStatus.PUBLISHED.value: "📢 опубликован",
-    TaskStatus.PUBLISH_FAILED.value: "⚠️ ошибка публикации",
-    TaskStatus.CANCELLED.value: "❌ отменён",
-}
+STATUS_LABELS = content_tasks.STATUS_LABELS
 
 
 def _admin_base() -> str:

@@ -28,6 +28,19 @@ from app.services.settings_store import (
 
 logger = logging.getLogger(__name__)
 
+# Человекочитаемые подписи статусов (для бота и админки).
+STATUS_LABELS = {
+    TaskStatus.SCHEDULED.value: "⏳ ждёт генерации",
+    TaskStatus.GENERATING.value: "⚙️ генерируется",
+    TaskStatus.WAITING_FOR_APPROVAL.value: "🕓 на согласовании",
+    TaskStatus.REVISION_REQUESTED.value: "✏️ правки",
+    TaskStatus.APPROVED.value: "✅ одобрен, ждёт публикации",
+    TaskStatus.PUBLISHING.value: "📤 публикуется",
+    TaskStatus.PUBLISHED.value: "📢 опубликован",
+    TaskStatus.PUBLISH_FAILED.value: "⚠️ ошибка публикации",
+    TaskStatus.CANCELLED.value: "❌ отменён",
+}
+
 
 async def get_task(session: AsyncSession, task_id: int) -> ContentTask | None:
     return await session.get(ContentTask, task_id)
