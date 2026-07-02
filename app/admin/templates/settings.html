@@ -21,6 +21,16 @@
                 <input type="text" name="daily_check_time" value="{{ data.daily_check_time }}">
             </div>
             <div>
+                <label>Готовить черновик за (дней до публикации)</label>
+                <input type="number" min="0" name="draft_lead_days" value="{{ data.draft_lead_days }}">
+            </div>
+            <div>
+                <label>Время публикации по умолчанию (ЧЧ:ММ)</label>
+                <input type="text" name="default_publish_time" value="{{ data.default_publish_time }}">
+            </div>
+        </div>
+        <div class="row">
+            <div>
                 <label>AI-провайдер</label>
                 <input type="text" name="ai_provider" value="{{ data.ai_provider }}">
             </div>

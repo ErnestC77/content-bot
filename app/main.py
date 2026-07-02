@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
     app.state.bot = bot
     app.state.storage = storage
 
-    scheduler = build_scheduler(bot, storage)
+    scheduler = build_scheduler(bot)
     scheduler.start()
 
     polling_task: asyncio.Task | None = None

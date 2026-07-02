@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     app_port: int = 8000
     timezone: str = "Europe/Moscow"
     daily_check_time: str = "10:00"
+    # за сколько дней до публикации бот готовит черновик и шлёт на согласование
+    draft_lead_days: int = 1
+    # время публикации по умолчанию, если у задачи не указано своё
+    default_publish_time: str = "10:00"
     bot_mode: str = "polling"  # polling | webhook
     webhook_url: str = ""
     webhook_secret: str = "change-me"

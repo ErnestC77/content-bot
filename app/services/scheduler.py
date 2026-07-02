@@ -1,22 +1,25 @@
-"""Планировщик: ежедневная проверка календаря и напоминания о неодобренных постах.
+"""Планировщик двух календарей.
 
-ВАЖНО: планировщик НИКОГДА не публикует посты. Наступление времени публикации
-без одобрения приводит только к напоминанию владельцу (по ТЗ).
+- draft_generation_check: за лид-тайм до публикации готовит черновик и шлёт на согласование.
+- publish_check: публикует одобренные посты, когда наступило их время.
+- reminder_check: напоминает о постах, чьё время пришло, но одобрения нет.
+
+ВАЖНО: планировщик НИКОГДА не публикует неодобренные посты (главное правило ТЗ).
 """
 
 import logging
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot
-from aiogram.fsm.storage.base import BaseStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.bot.flow import begin_task_flow
+from app.bot.flow import prepare_and_send_draft
 from app.config.settings import get_settings
-from app.database.models import ContentTask, TaskStatus
 from app.database.session import get_session
-from app.services import content_tasks
+from app.services import content_tasks, publishing
+from app.services.settings_store import get_default_publish_time, get_draft_lead_days
 
 logger = logging.getLogger(__name__)
 
@@ -27,68 +30,96 @@ REMINDER_TEXT = (
 )
 
 
-async def daily_check(bot: Bot, storage: BaseStorage) -> None:
-    """Находит активные задачи на сегодня и запускает сценарий вопросов."""
-    settings = get_settings()
-    owner_id = settings.owner_telegram_id
+def _tz() -> ZoneInfo:
+    return ZoneInfo(get_settings().timezone)
+
+
+async def _default_time(session) -> time:
+    raw = await get_default_publish_time(session)
+    hh, mm = (int(x) for x in raw.split(":"))
+    return time(hh, mm)
+
+
+async def draft_generation_check(bot: Bot) -> None:
+    """Готовит черновики для задач, у которых наступил момент подготовки."""
+    owner_id = get_settings().owner_telegram_id
     async with get_session() as session:
-        tasks = await content_tasks.tasks_for_date(session, date.today())
-    startable = [
-        t for t in tasks if t.status in (TaskStatus.SCHEDULED.value, TaskStatus.DRAFT.value)
-    ]
-    if not startable:
-        logger.info("daily_check: активных задач на сегодня нет")
+        lead = await get_draft_lead_days(session)
+        due = await content_tasks.tasks_due_for_draft(session, date.today(), lead)
+        ids = [t.id for t in due]
+    if not ids:
         return
-    # Запускаем первую; остальные владелец запустит вручную через /today
-    task = startable[0]
-    logger.info("daily_check: запускаю задачу #%s", task.id)
-    await begin_task_flow(bot, storage, task.id, owner_id)
+    logger.info("draft_generation_check: генерирую черновики %s", ids)
+    for task_id in ids:
+        await prepare_and_send_draft(bot, task_id, owner_id)
+
+
+async def publish_check(bot: Bot) -> None:
+    """Публикует одобренные посты, у которых наступило время публикации."""
+    now = datetime.now(_tz())
+    async with get_session() as session:
+        default_time = await _default_time(session)
+        due = await content_tasks.tasks_due_for_publish(session, now, _tz(), default_time)
+        ids = [t.id for t in due]
+    for task_id in ids:
+        async with get_session() as session:
+            task = await content_tasks.get_task(session, task_id)
+            if task is None:
+                continue
+            result = await publishing.publish_task(bot, session, task)
+        try:
+            await bot.send_message(
+                get_settings().owner_telegram_id,
+                f"Задача #{task_id}: {result.message}",
+            )
+        except Exception:
+            logger.exception("Не удалось уведомить о публикации задачи #%s", task_id)
 
 
 async def reminder_check(bot: Bot) -> None:
-    """Напоминает о постах, чьё время публикации прошло, но одобрения нет."""
-    from sqlalchemy import select
+    """Напоминает о постах, чьё время пришло, но одобрения нет."""
+    from datetime import timedelta
 
-    settings = get_settings()
-    owner_id = settings.owner_telegram_id
-    now = datetime.now(timezone.utc)
-    today = date.today()
-
+    owner_id = get_settings().owner_telegram_id
+    now = datetime.now(_tz())
     async with get_session() as session:
-        tasks = list(
-            await session.scalars(
-                select(ContentTask)
-                .where(ContentTask.is_active.is_(True))
-                .where(ContentTask.status == TaskStatus.WAITING_FOR_APPROVAL.value)
-                .where(ContentTask.publish_date <= today)
-            )
-        )
-        for task in tasks:
-            publish_time = task.publish_time or time(23, 59)
-            due = datetime.combine(task.publish_date, publish_time, tzinfo=timezone.utc)
+        default_time = await _default_time(session)
+        pending = await content_tasks.tasks_awaiting_approval(session)
+        to_remind = []
+        for task in pending:
+            due = content_tasks.publish_datetime(task, _tz(), default_time)
             if now < due:
                 continue
-            # Не спамим: напоминаем не чаще раза в 3 часа
-            if task.last_reminded_at and now - task.last_reminded_at < timedelta(hours=3):
+            if task.last_reminded_at and (now - task.last_reminded_at.astimezone(_tz())) < timedelta(hours=3):
                 continue
             task.last_reminded_at = now
+            to_remind.append(task.id)
+        if to_remind:
             await session.commit()
-            try:
-                await bot.send_message(owner_id, f"Задача #{task.id}. {REMINDER_TEXT}")
-            except Exception:
-                logger.exception("Не удалось отправить напоминание по задаче #%s", task.id)
+    for task_id in to_remind:
+        try:
+            await bot.send_message(owner_id, f"Задача #{task_id}. {REMINDER_TEXT}")
+        except Exception:
+            logger.exception("Не удалось отправить напоминание по задаче #%s", task_id)
 
 
-def build_scheduler(bot: Bot, storage: BaseStorage) -> AsyncIOScheduler:
+def build_scheduler(bot: Bot) -> AsyncIOScheduler:
     settings = get_settings()
     scheduler = AsyncIOScheduler(timezone=settings.timezone)
 
     hour, minute = (int(x) for x in settings.daily_check_time.split(":"))
     scheduler.add_job(
-        daily_check,
+        draft_generation_check,
         CronTrigger(hour=hour, minute=minute, timezone=settings.timezone),
-        args=[bot, storage],
-        id="daily_check",
+        args=[bot],
+        id="draft_generation_check",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        publish_check,
+        CronTrigger(minute="*/5", timezone=settings.timezone),
+        args=[bot],
+        id="publish_check",
         replace_existing=True,
     )
     scheduler.add_job(

@@ -39,6 +39,7 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     },
     TaskStatus.SCHEDULED.value: {
         TaskStatus.WAITING_FOR_ANSWERS.value,
+        TaskStatus.GENERATING.value,       # прямая авто-генерация из темы
         TaskStatus.CANCELLED.value,
     },
     TaskStatus.WAITING_FOR_ANSWERS.value: {

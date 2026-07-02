@@ -1,30 +1,20 @@
 from aiogram.fsm.state import State, StatesGroup
 
 
-class TaskFlow(StatesGroup):
-    """FSM сценария подготовки поста для конкретной задачи.
+class AddPosts(StatesGroup):
+    """Массовое добавление задач списком строк «дата [время] — тема»."""
 
-    В data хранится task_id и список оставшихся вопросов.
-    """
-
-    waiting_for_answers = State()   # ждём ответы на уточняющие вопросы
-    collecting_media = State()      # ждём фото/видео (опционально)
-    waiting_for_approval = State()  # черновик отправлен, ждём решения
-    waiting_for_revision = State()  # нажали «Правки», ждём текст правок
+    waiting_list = State()
 
 
-class AddPost(StatesGroup):
-    """Создание задачи календаря прямо в боте."""
+class Revision(StatesGroup):
+    """Владелец нажал «Правки» — ждём текст корректировок для конкретной задачи."""
 
-    date = State()
-    rubric = State()
-    topic = State()
-    goal = State()
-    description = State()
+    waiting_text = State()
 
 
 class AddMedia(StatesGroup):
-    """Добавление медиа к выбранной задаче вне основного сценария."""
+    """Добавление медиа к выбранной задаче."""
 
     choosing_task = State()
     receiving = State()

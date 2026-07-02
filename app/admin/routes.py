@@ -20,6 +20,8 @@ from app.services.settings_store import (
     KEY_AI_PROVIDER,
     KEY_CHANNEL_ID,
     KEY_DAILY_CHECK_TIME,
+    KEY_DEFAULT_PUBLISH_TIME,
+    KEY_DRAFT_LEAD_DAYS,
     KEY_OWNER_TELEGRAM_ID,
     KEY_SYSTEM_PROMPT,
     get_setting,
@@ -143,14 +145,12 @@ async def delete_task(task_id: int, session: AsyncSession = Depends(get_session_
 
 @router.post("/tasks/{task_id}/run")
 async def run_task(request: Request, task_id: int):
-    """Ручной запуск сценария задачи на сегодня (через бота)."""
+    """Ручная генерация черновика задачи и отправка на согласование в бот."""
+    from app.bot.flow import prepare_and_send_draft
     from app.config.settings import get_settings
 
     bot = request.app.state.bot
-    storage = request.app.state.storage
-    from app.bot.flow import begin_task_flow
-
-    await begin_task_flow(bot, storage, task_id, get_settings().owner_telegram_id)
+    await prepare_and_send_draft(bot, task_id, get_settings().owner_telegram_id)
     return RedirectResponse(f"/admin/tasks/{task_id}", status_code=303)
 
 
@@ -163,6 +163,8 @@ async def settings_page(request: Request, session: AsyncSession = Depends(get_se
         "owner_telegram_id": await get_setting(session, KEY_OWNER_TELEGRAM_ID, str(s.owner_telegram_id)),
         "channel_id": await get_setting(session, KEY_CHANNEL_ID, s.default_channel_id),
         "daily_check_time": await get_setting(session, KEY_DAILY_CHECK_TIME, s.daily_check_time),
+        "draft_lead_days": await get_setting(session, KEY_DRAFT_LEAD_DAYS, str(s.draft_lead_days)),
+        "default_publish_time": await get_setting(session, KEY_DEFAULT_PUBLISH_TIME, s.default_publish_time),
         "ai_provider": await get_setting(session, KEY_AI_PROVIDER, s.ai_provider),
         "ai_model": await get_setting(session, KEY_AI_MODEL, s.ai_model),
         "system_prompt": await get_setting(session, KEY_SYSTEM_PROMPT, prompts.DEFAULT_SYSTEM_PROMPT),
@@ -175,6 +177,8 @@ async def save_settings(
     owner_telegram_id: str = Form(""),
     channel_id: str = Form(""),
     daily_check_time: str = Form(""),
+    draft_lead_days: str = Form("1"),
+    default_publish_time: str = Form("10:00"),
     ai_provider: str = Form(""),
     ai_model: str = Form(""),
     system_prompt: str = Form(""),
@@ -183,6 +187,8 @@ async def save_settings(
     await set_setting(session, KEY_OWNER_TELEGRAM_ID, owner_telegram_id)
     await set_setting(session, KEY_CHANNEL_ID, channel_id)
     await set_setting(session, KEY_DAILY_CHECK_TIME, daily_check_time)
+    await set_setting(session, KEY_DRAFT_LEAD_DAYS, draft_lead_days)
+    await set_setting(session, KEY_DEFAULT_PUBLISH_TIME, default_publish_time)
     await set_setting(session, KEY_AI_PROVIDER, ai_provider)
     await set_setting(session, KEY_AI_MODEL, ai_model)
     await set_setting(session, KEY_SYSTEM_PROMPT, system_prompt)

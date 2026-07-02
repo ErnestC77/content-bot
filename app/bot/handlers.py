@@ -1,7 +1,7 @@
-"""Хендлеры Telegram-бота (aiogram 3)."""
+"""Хендлеры Telegram-бота (aiogram 3) — модель двух календарей."""
 
 import logging
-from datetime import date
+from datetime import date, time
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -9,38 +9,50 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from app.bot import keyboards as kb
-from app.bot.flow import begin_task_flow
-from app.bot.states import AddMedia, AddPost, TaskFlow
-from app.config.settings import get_settings
-from app.database.models import (
-    ApprovalAction,
-    ContentTask,
-    MediaType,
-    TaskAnswer,
-    TaskStatus,
-    User,
-    UserRole,
+from app.bot.flow import (
+    approve_task,
+    prepare_and_send_draft,
+    regenerate_and_send,
 )
+from app.bot.states import AddMedia, AddPosts, Revision
+from app.config.settings import get_settings
+from app.database.models import ApprovalAction, MediaType, TaskStatus
 from app.database.session import get_session
-from app.services import approval, audit, content_tasks, media, publishing
-from app.services.settings_store import KEY_CHANNEL_ID, get_channel_id, set_setting
+from app.services import approval, audit, content_tasks, media
+from app.services.settings_store import (
+    KEY_CHANNEL_ID,
+    get_channel_id,
+    get_default_publish_time,
+    get_draft_lead_days,
+    set_setting,
+)
 
 logger = logging.getLogger(__name__)
 router = Router()
 
+STATUS_LABELS = {
+    TaskStatus.SCHEDULED.value: "⏳ ждёт генерации",
+    TaskStatus.GENERATING.value: "⚙️ генерируется",
+    TaskStatus.WAITING_FOR_APPROVAL.value: "🕓 на согласовании",
+    TaskStatus.REVISION_REQUESTED.value: "✏️ правки",
+    TaskStatus.APPROVED.value: "✅ одобрен, ждёт публикации",
+    TaskStatus.PUBLISHING.value: "📤 публикуется",
+    TaskStatus.PUBLISHED.value: "📢 опубликован",
+    TaskStatus.PUBLISH_FAILED.value: "⚠️ ошибка публикации",
+    TaskStatus.CANCELLED.value: "❌ отменён",
+}
 
-async def _ensure_owner_user(session, telegram_id: int, name: str) -> User:
-    from sqlalchemy import select
 
-    user = await session.scalar(select(User).where(User.telegram_id == telegram_id))
-    if user is None:
-        user = User(telegram_id=telegram_id, name=name, role=UserRole.OWNER.value)
-        session.add(user)
-        await session.flush()
-    return user
+def _admin_base() -> str:
+    s = get_settings()
+    return (s.effective_webhook_url or f"http://{s.app_host}:{s.app_port}").rstrip("/")
 
 
-# ---------- Авто-определение канала ----------
+def _parse_task_id(data: str) -> int:
+    return int(data.split(":", 1)[1])
+
+
+# ---------- Авто-определение канала (только для владельца) ----------
 
 
 async def _remember_channel(bot, chat_id: int, title: str) -> None:
@@ -58,7 +70,6 @@ async def _remember_channel(bot, chat_id: int, title: str) -> None:
 
 
 async def _owner_is_admin(bot, chat_id: int) -> bool:
-    """Проверяет, что владелец бота — админ/создатель указанного чата."""
     try:
         member = await bot.get_chat_member(chat_id, get_settings().owner_telegram_id)
     except Exception:
@@ -68,11 +79,6 @@ async def _owner_is_admin(bot, chat_id: int) -> bool:
 
 @router.my_chat_member()
 async def on_bot_status_changed(event: ChatMemberUpdated) -> None:
-    """Бота добавили/повысили в канале — сохраняем ID, но только если это сделал владелец.
-
-    Эти апдейты идут мимо OwnerOnlyMiddleware, поэтому проверяем инициатора вручную,
-    иначе кто угодно мог бы добавить бота в свой канал и перехватить настройку.
-    """
     if event.chat.type != "channel":
         return
     if event.from_user is None or event.from_user.id != get_settings().owner_telegram_id:
@@ -83,8 +89,6 @@ async def on_bot_status_changed(event: ChatMemberUpdated) -> None:
 
 @router.channel_post()
 async def on_channel_post(message: Message) -> None:
-    """Резервный путь: задаём канал по посту, только если он ещё не задан
-    и владелец является админом этого канала (у channel_post нет from_user)."""
     async with get_session() as session:
         if await get_channel_id(session):
             return
@@ -93,74 +97,38 @@ async def on_channel_post(message: Message) -> None:
     await _remember_channel(message.bot, message.chat.id, message.chat.title)
 
 
-# ---------- Команды ----------
+# ---------- Базовые команды ----------
 
 
 @router.message(Command("start"))
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
     async with get_session() as session:
-        await _ensure_owner_user(session, message.from_user.id, message.from_user.full_name)
+        await content_tasks.ensure_owner_user(session, message.from_user.id, message.from_user.full_name)
         await session.commit()
     await message.answer(
-        "Привет! Я AI-редактор вашего Telegram-канала.\n"
-        "Я веду контент по календарю, готовлю черновики постов и публикую их "
-        "в канал только после вашего явного одобрения.\n\n"
-        "Используйте меню ниже или команды: /today, /tasks, /settings, /admin.",
+        "Привет! Я AI-редактор вашего Telegram-канала.\n\n"
+        "Как это работает:\n"
+        "1. Вы задаёте расписание списком «дата — тема» (кнопка «➕ Добавить посты»).\n"
+        "2. Заранее я генерирую черновик по теме и присылаю на согласование.\n"
+        "3. Вы одобряете или пишете правки — я делаю новые версии, пока не устроит.\n"
+        "4. Одобренный пост публикуется в канал автоматически в назначенное время.",
         reply_markup=kb.owner_menu(),
-    )
-
-
-def _admin_base() -> str:
-    s = get_settings()
-    return (s.effective_webhook_url or f"http://{s.app_host}:{s.app_port}").rstrip("/")
-
-
-@router.message(Command("admin"))
-async def cmd_admin(message: Message) -> None:
-    await message.answer(
-        f"Админ-панель: {_admin_base()}/admin\nВход по логину и паролю из настроек."
     )
 
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext) -> None:
-    current = await state.get_state()
-    if current is None:
-        await message.answer("Нет активного сценария.")
+    if await state.get_state() is None:
+        await message.answer("Нет активного действия.", reply_markup=kb.owner_menu())
         return
     await state.clear()
-    await message.answer("Текущий сценарий отменён.", reply_markup=kb.owner_menu())
+    await message.answer("Отменено.", reply_markup=kb.owner_menu())
 
 
-@router.message(Command("tasks"))
-@router.message(F.text == "📅 Календарь")
-async def cmd_tasks(message: Message) -> None:
-    async with get_session() as session:
-        tasks = await content_tasks.upcoming_tasks(session)
-    if not tasks:
-        await message.answer("Ближайших задач нет.")
-        return
-    lines = ["Ближайшие задачи:"]
-    for t in tasks:
-        lines.append(
-            f"#{t.id} {t.publish_date} — {t.rubric or 'без рубрики'}: "
-            f"{t.topic or '—'} [{t.status}]"
-        )
-    await message.answer("\n".join(lines))
-
-
-@router.message(Command("today"))
-@router.message(F.text == "📝 Задача на сегодня")
-async def cmd_today(message: Message, state: FSMContext) -> None:
-    async with get_session() as session:
-        tasks = await content_tasks.tasks_for_date(session, date.today())
-    active = [t for t in tasks if t.status in (TaskStatus.SCHEDULED.value, TaskStatus.DRAFT.value)]
-    if not active:
-        await message.answer("На сегодня нет активных задач для запуска.")
-        return
-    task = active[0]
-    await message.answer(f"Запускаю задачу #{task.id}: {task.rubric} — {task.topic}")
-    await begin_task_flow(message.bot, state.storage, task.id, message.from_user.id)
+@router.message(Command("admin"))
+async def cmd_admin(message: Message) -> None:
+    await message.answer(f"Админ-панель: {_admin_base()}/admin\nВход по логину и паролю из настроек.")
 
 
 @router.message(Command("settings"))
@@ -168,13 +136,17 @@ async def cmd_today(message: Message, state: FSMContext) -> None:
 async def cmd_settings(message: Message) -> None:
     async with get_session() as session:
         channel = await get_channel_id(session)
+        lead = await get_draft_lead_days(session)
+        def_time = await get_default_publish_time(session)
     s = get_settings()
     await message.answer(
         "Настройки:\n"
         f"— Владелец (Telegram ID): {s.owner_telegram_id}\n"
         f"— Канал: {channel or 'не задан'}\n"
+        f"— Черновик готовится за {lead} дн. до публикации\n"
+        f"— Время публикации по умолчанию: {def_time}\n"
         f"— AI-модель: {s.ai_model}\n\n"
-        f"Изменить настройки, системный промт и календарь можно в админ-панели: {_admin_base()}/admin"
+        f"Изменить всё это можно в админ-панели: {_admin_base()}/admin"
     )
 
 
@@ -186,114 +158,98 @@ async def cmd_channel(message: Message) -> None:
         await message.answer(f"Текущий канал для публикации: {channel}")
     else:
         await message.answer(
-            "Канал не задан. Укажите его в админ-панели и добавьте бота "
-            "в канал администратором с правом публикации."
+            "Канал не задан. Добавьте бота администратором в закрытый канал "
+            "и опубликуйте там любое сообщение — я сохраню канал автоматически."
         )
 
 
-# ---------- Сценарий: создание поста прямо в боте ----------
+# ---------- Календарь ----------
+
+
+@router.message(Command("calendar"))
+@router.message(Command("tasks"))
+@router.message(F.text == "📅 Календарь")
+async def cmd_calendar(message: Message) -> None:
+    async with get_session() as session:
+        tasks = await content_tasks.upcoming_tasks(session, limit=20)
+    if not tasks:
+        await message.answer(
+            "Расписание пусто. Добавьте посты кнопкой «➕ Добавить посты».",
+            reply_markup=kb.owner_menu(),
+        )
+        return
+    lines = ["🗓 Ближайшие посты:\n"]
+    for t in tasks:
+        tm = t.publish_time.strftime("%H:%M") if t.publish_time else "—"
+        status = STATUS_LABELS.get(t.status, t.status)
+        lines.append(f"#{t.id} · {t.publish_date} {tm}\n   {t.topic or '(без темы)'}\n   {status}")
+    await message.answer("\n".join(lines))
+
+
+# ---------- Добавление постов списком ----------
 
 
 @router.message(Command("add"))
-@router.message(F.text == "➕ Добавить пост")
-async def cmd_add_post(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    await state.set_state(AddPost.date)
-    await message.answer(
-        "Создаём новую задачу в календаре.\n\n"
-        "Шаг 1/5. На какую дату? Отправьте дату в формате ГГГГ-ММ-ДД "
-        "или нажмите «Сегодня».",
-        reply_markup=kb.date_today_kb(),
-    )
-
-
-async def _addpost_ask_rubric(message: Message, state: FSMContext) -> None:
-    await state.set_state(AddPost.rubric)
-    await message.answer("Шаг 2/5. Выберите рубрику:", reply_markup=kb.rubrics_kb())
-
-
-@router.callback_query(AddPost.date, F.data == kb.CB_DATE_TODAY)
-async def addpost_date_today(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.update_data(publish_date=date.today().isoformat())
-    await _addpost_ask_rubric(callback.message, state)
-    await callback.answer()
-
-
-@router.message(AddPost.date, F.text)
-async def addpost_date_text(message: Message, state: FSMContext) -> None:
-    try:
-        d = date.fromisoformat(message.text.strip())
-    except ValueError:
-        await message.answer("Не понял дату. Формат: ГГГГ-ММ-ДД, например 2026-07-05.",
-                             reply_markup=kb.date_today_kb())
-        return
-    await state.update_data(publish_date=d.isoformat())
-    await _addpost_ask_rubric(message, state)
-
-
-@router.callback_query(AddPost.rubric, F.data.startswith(f"{kb.CB_RUBRIC}:"))
-async def addpost_rubric(callback: CallbackQuery, state: FSMContext) -> None:
-    idx = int(callback.data.split(":", 1)[1])
-    rubric = kb.RUBRICS[idx] if 0 <= idx < len(kb.RUBRICS) else ""
-    await state.update_data(rubric=rubric)
-    await state.set_state(AddPost.topic)
-    await callback.message.answer(f"Рубрика: {rubric}\n\nШаг 3/5. Напишите тему поста.")
-    await callback.answer()
-
-
-@router.message(AddPost.topic, F.text)
-async def addpost_topic(message: Message, state: FSMContext) -> None:
-    await state.update_data(topic=message.text.strip())
-    await state.set_state(AddPost.goal)
-    await message.answer("Шаг 4/5. Какая цель поста? (что он должен дать читателю)")
-
-
-@router.message(AddPost.goal, F.text)
-async def addpost_goal(message: Message, state: FSMContext) -> None:
-    await state.update_data(goal=message.text.strip())
-    await state.set_state(AddPost.description)
-    await message.answer(
-        "Шаг 5/5. Добавьте описание/детали задачи или нажмите «Пропустить».",
-        reply_markup=kb.skip_kb(),
-    )
-
-
-async def _addpost_finish(message: Message, state: FSMContext, description: str) -> None:
-    data = await state.get_data()
+@router.message(F.text == "➕ Добавить посты")
+async def cmd_add_posts(message: Message, state: FSMContext) -> None:
+    await state.set_state(AddPosts.waiting_list)
     async with get_session() as session:
-        task = ContentTask(
-            publish_date=date.fromisoformat(data["publish_date"]),
-            rubric=data.get("rubric", ""),
-            topic=data.get("topic", ""),
-            goal=data.get("goal", ""),
-            description=description,
-            status=TaskStatus.SCHEDULED.value,
-        )
-        session.add(task)
-        await session.commit()
-        task_id = task.id
-    await state.clear()
+        def_time = await get_default_publish_time(session)
     await message.answer(
-        f"✅ Задача #{task_id} создана на {data['publish_date']}.\n"
-        f"Рубрика: {data.get('rubric') or '—'} · Тема: {data.get('topic') or '—'}\n\n"
-        "Запустить подготовку поста можно кнопкой «📝 Задача на сегодня» (если дата сегодня) "
-        "или из админки. Прикрепить медиа — кнопкой «📎 Добавить медиа».",
-        reply_markup=kb.owner_menu(),
+        "Пришлите список постов — по одному на строку в формате:\n\n"
+        "<code>ГГГГ-ММ-ДД — тема</code>\n"
+        "или\n"
+        "<code>ГГГГ-ММ-ДД ЧЧ:ММ — тема</code>\n\n"
+        "Пример:\n"
+        "2026-07-05 — Как выбрать первый велосипед\n"
+        "2026-07-06 10:00 — Разбор ошибок новичков\n\n"
+        f"Если время не указать, возьму {def_time}. Для отмены — /cancel.",
+        parse_mode="HTML",
     )
 
 
-@router.callback_query(AddPost.description, F.data == kb.CB_SKIP)
-async def addpost_desc_skip(callback: CallbackQuery, state: FSMContext) -> None:
-    await _addpost_finish(callback.message, state, "")
-    await callback.answer()
+@router.message(AddPosts.waiting_list, F.text)
+async def receive_posts_list(message: Message, state: FSMContext) -> None:
+    async with get_session() as session:
+        raw = await get_default_publish_time(session)
+        hh, mm = (int(x) for x in raw.split(":"))
+        created, errors = await content_tasks.bulk_create_tasks(session, message.text, time(hh, mm))
+        await session.commit()
+    await state.clear()
+    parts = [f"✅ Создано постов: {len(created)}."]
+    if created:
+        parts.append("\n" + "\n".join(
+            f"#{t.id} · {t.publish_date} {t.publish_time.strftime('%H:%M')} — {t.topic}"
+            for t in created
+        ))
+    if errors:
+        parts.append("\n⚠️ Не разобрал строки:\n" + "\n".join(f"• {e}" for e in errors))
+    parts.append("\nЧерновики я подготовлю заранее и пришлю на согласование.")
+    await message.answer("\n".join(parts), reply_markup=kb.owner_menu())
 
 
-@router.message(AddPost.description, F.text)
-async def addpost_desc_text(message: Message, state: FSMContext) -> None:
-    await _addpost_finish(message, state, message.text.strip())
+# ---------- Ручной запуск генерации ----------
 
 
-# ---------- Сценарий: добавить медиа к задаче ----------
+@router.message(Command("today"))
+@router.message(F.text == "📝 Сгенерировать сейчас")
+async def cmd_generate_now(message: Message) -> None:
+    async with get_session() as session:
+        lead = await get_draft_lead_days(session)
+        due = await content_tasks.tasks_due_for_draft(session, date.today(), lead)
+        ids = [t.id for t in due]
+    if not ids:
+        await message.answer(
+            "Нет постов, готовых к генерации черновика (по лид-тайму). "
+            "Добавьте пост на ближайшие дни или уменьшите лид-тайм в настройках."
+        )
+        return
+    await message.answer(f"Генерирую черновики: {len(ids)}…")
+    for tid in ids:
+        await prepare_and_send_draft(message.bot, tid, message.from_user.id)
+
+
+# ---------- Добавление медиа к задаче ----------
 
 
 @router.message(F.text == "📎 Добавить медиа")
@@ -301,11 +257,10 @@ async def cmd_add_media(message: Message, state: FSMContext) -> None:
     await state.clear()
     async with get_session() as session:
         tasks = await content_tasks.upcoming_tasks(session, limit=10)
-    # можно прикреплять медиа к задачам, которые ещё не опубликованы/не отменены
     tasks = [t for t in tasks if t.status not in (TaskStatus.PUBLISHED.value, TaskStatus.CANCELLED.value)]
     if not tasks:
         await message.answer(
-            "Нет подходящих задач. Сначала создайте пост кнопкой «➕ Добавить пост».",
+            "Нет подходящих задач. Сначала добавьте пост кнопкой «➕ Добавить посты».",
             reply_markup=kb.owner_menu(),
         )
         return
@@ -315,7 +270,7 @@ async def cmd_add_media(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(AddMedia.choosing_task, F.data.startswith(f"{kb.CB_PICKTASK}:"))
 async def addmedia_pick(callback: CallbackQuery, state: FSMContext) -> None:
-    task_id = int(callback.data.split(":", 1)[1])
+    task_id = _parse_task_id(callback.data)
     await state.update_data(task_id=task_id)
     await state.set_state(AddMedia.receiving)
     await callback.message.answer(
@@ -326,33 +281,29 @@ async def addmedia_pick(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.message(AddMedia.receiving, F.photo)
-async def addmedia_photo(message: Message, state: FSMContext) -> None:
+async def _save_media(state: FSMContext, file_id: str, mtype: MediaType, caption: str | None) -> None:
     data = await state.get_data()
     async with get_session() as session:
         task = await content_tasks.get_task(session, data["task_id"])
-        await media.add_media(session, task, message.photo[-1].file_id, MediaType.PHOTO, message.caption)
+        await media.add_media(session, task, file_id, mtype, caption)
         await session.commit()
+
+
+@router.message(AddMedia.receiving, F.photo)
+async def addmedia_photo(message: Message, state: FSMContext) -> None:
+    await _save_media(state, message.photo[-1].file_id, MediaType.PHOTO, message.caption)
     await message.answer("Фото сохранено.", reply_markup=kb.addmedia_done_kb())
 
 
 @router.message(AddMedia.receiving, F.video)
 async def addmedia_video(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    async with get_session() as session:
-        task = await content_tasks.get_task(session, data["task_id"])
-        await media.add_media(session, task, message.video.file_id, MediaType.VIDEO, message.caption)
-        await session.commit()
+    await _save_media(state, message.video.file_id, MediaType.VIDEO, message.caption)
     await message.answer("Видео сохранено.", reply_markup=kb.addmedia_done_kb())
 
 
 @router.message(AddMedia.receiving, F.document)
 async def addmedia_document(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    async with get_session() as session:
-        task = await content_tasks.get_task(session, data["task_id"])
-        await media.add_media(session, task, message.document.file_id, MediaType.DOCUMENT, message.caption)
-        await session.commit()
+    await _save_media(state, message.document.file_id, MediaType.DOCUMENT, message.caption)
     await message.answer("Файл сохранён.", reply_markup=kb.addmedia_done_kb())
 
 
@@ -371,144 +322,17 @@ async def addmedia_done(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-# ---------- Сценарий: ответы на вопросы ----------
-
-
-@router.message(TaskFlow.waiting_for_answers, F.text)
-async def collect_answer_text(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    task_id = data["task_id"]
-    async with get_session() as session:
-        task = await content_tasks.get_task(session, task_id)
-        user = await _ensure_owner_user(session, message.from_user.id, message.from_user.full_name)
-        session.add(TaskAnswer(task_id=task_id, user_id=user.id, answer_text=message.text))
-        await session.commit()
-    await message.answer("Записал. Ещё что-то или нажмите «Готово с ответами».", reply_markup=kb.answers_done_kb())
-
-
-@router.callback_query(F.data == kb.CB_ANSWERS_DONE)
-async def answers_done(callback: CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
-    task_id = data.get("task_id")
-    if task_id is None:
-        await callback.answer()
-        return
-    async with get_session() as session:
-        task = await content_tasks.get_task(session, task_id)
-        await approval.change_status(session, task, TaskStatus.COLLECTING_MEDIA, action=None)
-        await session.commit()
-    await state.set_state(TaskFlow.collecting_media)
-    await callback.message.answer(
-        "Пришлите фото или видео для поста (можно несколько) либо продолжите без медиа.",
-        reply_markup=kb.media_kb(),
-    )
-    await callback.answer()
-
-
-# ---------- Сценарий: приём медиа ----------
-
-
-@router.message(TaskFlow.collecting_media, F.photo)
-async def collect_photo(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    async with get_session() as session:
-        task = await content_tasks.get_task(session, data["task_id"])
-        await media.add_media(session, task, message.photo[-1].file_id, MediaType.PHOTO, message.caption)
-        await session.commit()
-    await message.answer("Фото сохранено.", reply_markup=kb.media_kb())
-
-
-@router.message(TaskFlow.collecting_media, F.video)
-async def collect_video(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    async with get_session() as session:
-        task = await content_tasks.get_task(session, data["task_id"])
-        await media.add_media(session, task, message.video.file_id, MediaType.VIDEO, message.caption)
-        await session.commit()
-    await message.answer("Видео сохранено.", reply_markup=kb.media_kb())
-
-
-@router.message(TaskFlow.collecting_media, F.document)
-async def collect_document(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    async with get_session() as session:
-        task = await content_tasks.get_task(session, data["task_id"])
-        await media.add_media(session, task, message.document.file_id, MediaType.DOCUMENT, message.caption)
-        await session.commit()
-    await message.answer("Файл сохранён.", reply_markup=kb.media_kb())
-
-
-@router.message(TaskFlow.collecting_media, F.text)
-async def collect_media_text(message: Message, state: FSMContext) -> None:
-    """Доп. пожелания во время приёма медиа сохраняем как ответ."""
-    data = await state.get_data()
-    async with get_session() as session:
-        user = await _ensure_owner_user(session, message.from_user.id, message.from_user.full_name)
-        session.add(TaskAnswer(task_id=data["task_id"], user_id=user.id, answer_text=message.text))
-        await session.commit()
-    await message.answer("Учту это пожелание.", reply_markup=kb.media_kb())
-
-
-@router.callback_query(F.data.in_({kb.CB_MEDIA_DONE, kb.CB_MEDIA_SKIP}))
-async def media_done(callback: CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
-    task_id = data.get("task_id")
-    if task_id is None:
-        await callback.answer()
-        return
-    await callback.message.answer("Генерирую черновик поста…")
-    await callback.answer()
-    await _generate_and_send(callback.message, state, task_id, kind="initial")
-
-
-# ---------- Генерация и отправка на согласование ----------
-
-
-async def _generate_and_send(message: Message, state: FSMContext, task_id: int, *, kind: str,
-                             revision_comment: str | None = None) -> None:
-    async with get_session() as session:
-        task = await content_tasks.get_task(session, task_id)
-        # generating допустим из collecting_media / waiting_for_answers / waiting_for_approval /
-        # revision_requested — проверку делает approval.change_status
-        try:
-            await approval.change_status(session, task, TaskStatus.GENERATING, action=None)
-            await session.commit()
-        except approval.InvalidTransitionError:
-            await session.rollback()
-
-        try:
-            await content_tasks.generate_post_version(
-                session, task, kind=kind, revision_comment=revision_comment
-            )
-        except Exception as exc:  # AIError и прочее
-            logger.exception("Ошибка генерации поста")
-            await session.rollback()
-            await message.answer(
-                "Не удалось сгенерировать пост: AI-сервис временно недоступен. "
-                "Попробуйте ещё раз позже. Статус задачи не изменён."
-            )
-            return
-
-        version = content_tasks.latest_post(task)
-        await approval.change_status(
-            session,
-            task,
-            TaskStatus.WAITING_FOR_APPROVAL,
-            action=ApprovalAction.SENT_FOR_APPROVAL.value,
-        )
-        await session.commit()
-        draft = content_tasks.format_draft_for_owner(version.text)
-
-    await message.answer(draft, reply_markup=kb.approval_kb(task_id))
-    await state.set_state(TaskFlow.waiting_for_approval)
-    await state.update_data(task_id=task_id)
-
-
 # ---------- Кнопки согласования ----------
 
 
-def _parse_task_id(data: str) -> int:
-    return int(data.split(":", 1)[1])
+@router.callback_query(F.data.startswith(f"{kb.CB_APPROVE}:"))
+async def cb_approve(callback: CallbackQuery) -> None:
+    task_id = _parse_task_id(callback.data)
+    reply = await approve_task(
+        callback.bot, task_id, callback.from_user.id, callback.from_user.full_name
+    )
+    await callback.message.answer(reply)
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith(f"{kb.CB_REVISION}:"))
@@ -516,105 +340,87 @@ async def cb_revision(callback: CallbackQuery, state: FSMContext) -> None:
     task_id = _parse_task_id(callback.data)
     async with get_session() as session:
         task = await content_tasks.get_task(session, task_id)
+        if task is None or task.status != TaskStatus.WAITING_FOR_APPROVAL.value:
+            await callback.answer("Этот черновик уже не на согласовании.", show_alert=True)
+            return
         await approval.change_status(
             session, task, TaskStatus.REVISION_REQUESTED,
             action=ApprovalAction.REVISION_REQUESTED.value,
         )
         await session.commit()
-    await state.set_state(TaskFlow.waiting_for_revision)
+    await state.set_state(Revision.waiting_text)
     await state.update_data(task_id=task_id)
     await callback.message.answer("Напишите, что изменить в посте.")
     await callback.answer()
 
 
-@router.message(TaskFlow.waiting_for_revision, F.text)
+@router.message(Revision.waiting_text, F.text)
 async def receive_revision(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
-    await message.answer("Генерирую новую версию с учётом правок…")
-    await _generate_and_send(message, state, data["task_id"], kind="revision",
-                             revision_comment=message.text)
+    task_id = data["task_id"]
+    await state.clear()
+    await message.answer("Готовлю новую версию с учётом правок…")
+    await regenerate_and_send(message.bot, task_id, message.from_user.id,
+                              kind="revision", revision_comment=message.text)
 
 
 @router.callback_query(F.data.startswith(f"{kb.CB_ALTERNATIVE}:"))
-async def cb_alternative(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_alternative(callback: CallbackQuery) -> None:
     task_id = _parse_task_id(callback.data)
     async with get_session() as session:
         task = await content_tasks.get_task(session, task_id)
+        if task is None or task.status != TaskStatus.WAITING_FOR_APPROVAL.value:
+            await callback.answer("Этот черновик уже не на согласовании.", show_alert=True)
+            return
         await audit.log_action(
-            session, task_id, ApprovalAction.ALTERNATIVE_REQUESTED.value,
-            old_status=task.status,
+            session, task_id, ApprovalAction.ALTERNATIVE_REQUESTED.value, old_status=task.status
         )
         await session.commit()
     await callback.message.answer("Готовлю другой вариант…")
     await callback.answer()
-    await _generate_and_send(callback.message, state, task_id, kind="alternative")
+    await regenerate_and_send(callback.bot, task_id, callback.from_user.id, kind="alternative")
 
 
 @router.callback_query(F.data.startswith(f"{kb.CB_CANCEL}:"))
-async def cb_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_cancel(callback: CallbackQuery) -> None:
     task_id = _parse_task_id(callback.data)
-    async with get_session() as session:
-        task = await content_tasks.get_task(session, task_id)
-        await approval.change_status(
-            session, task, TaskStatus.CANCELLED, action=ApprovalAction.CANCELLED.value,
-        )
-        await session.commit()
-    await state.clear()
-    await callback.message.answer("Задача отменена. Пост не будет опубликован.")
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith(f"{kb.CB_APPROVE}:"))
-async def cb_approve(callback: CallbackQuery, state: FSMContext) -> None:
-    task_id = _parse_task_id(callback.data)
-    await _approve_and_publish(callback.message, state, task_id, user_tg_id=callback.from_user.id)
-    await callback.answer()
-
-
-# ---------- Текстовое одобрение в состоянии ожидания согласования ----------
-
-
-@router.message(TaskFlow.waiting_for_approval, F.text)
-async def approval_text(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    task_id = data.get("task_id")
-    if task_id is None:
-        return
-    if approval.is_text_approval(message.text):
-        await _approve_and_publish(message, state, task_id, user_tg_id=message.from_user.id)
-    else:
-        await message.answer(
-            "Это не считается одобрением. Чтобы опубликовать, нажмите «✅ Одобряю» "
-            "или напишите: одобряю / публикуй / можно публиковать / утверждаю.\n"
-            "Для правок нажмите «✏️ Правки», для отмены — «❌ Отменить»."
-        )
-
-
-async def _approve_and_publish(message: Message, state: FSMContext, task_id: int, *, user_tg_id: int) -> None:
     async with get_session() as session:
         task = await content_tasks.get_task(session, task_id)
         if task is None:
-            await message.answer("Задача не найдена.")
+            await callback.answer()
             return
-        if task.status == TaskStatus.PUBLISHED.value:
-            await message.answer("Этот пост уже опубликован.")
-            return
-        if task.status != TaskStatus.WAITING_FOR_APPROVAL.value:
-            await message.answer(
-                f"Одобрить сейчас нельзя: статус задачи «{task.status}». "
-                "Одобрение доступно только для поста, ожидающего согласования."
-            )
-            return
-        user = await _ensure_owner_user(session, user_tg_id, message.chat.full_name or "owner")
         await approval.change_status(
-            session, task, TaskStatus.APPROVED,
-            action=ApprovalAction.APPROVED.value, user_id=user.id,
+            session, task, TaskStatus.CANCELLED, action=ApprovalAction.CANCELLED.value
         )
         await session.commit()
+    await callback.message.answer(f"Задача #{task_id} отменена. Пост не будет опубликован.")
+    await callback.answer()
 
-    await message.answer("Одобрено. Публикую в канал…")
-    async with get_session() as session:
-        task = await content_tasks.get_task(session, task_id)
-        result = await publishing.publish_task(message.bot, session, task)
-    await message.answer(result.message)
-    await state.clear()
+
+# ---------- Текстовое одобрение (без активного состояния) ----------
+
+
+@router.message(F.text)
+async def text_fallback(message: Message, state: FSMContext) -> None:
+    if await state.get_state() is not None:
+        return
+    if approval.is_text_approval(message.text):
+        async with get_session() as session:
+            pending = await content_tasks.tasks_awaiting_approval(session)
+        if not pending:
+            await message.answer("Сейчас нет черновиков, ожидающих одобрения.")
+            return
+        if len(pending) > 1:
+            await message.answer(
+                "Несколько черновиков ждут решения — одобрите нужный кнопкой «✅ Одобряю» под ним."
+            )
+            return
+        reply = await approve_task(
+            message.bot, pending[0].id, message.from_user.id, message.from_user.full_name
+        )
+        await message.answer(reply)
+    else:
+        await message.answer(
+            "Не понял. Используйте меню внизу или кнопки под черновиком.",
+            reply_markup=kb.owner_menu(),
+        )

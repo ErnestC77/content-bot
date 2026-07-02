@@ -11,6 +11,8 @@ KEY_CHANNEL_ID = "channel_id"
 KEY_DAILY_CHECK_TIME = "daily_check_time"
 KEY_AI_PROVIDER = "ai_provider"
 KEY_AI_MODEL = "ai_model"
+KEY_DRAFT_LEAD_DAYS = "draft_lead_days"
+KEY_DEFAULT_PUBLISH_TIME = "default_publish_time"
 
 
 async def get_setting(session: AsyncSession, key: str, default: str = "") -> str:
@@ -48,3 +50,15 @@ async def get_ai_model(session: AsyncSession) -> str:
 
 async def get_daily_check_time(session: AsyncSession) -> str:
     return await get_setting(session, KEY_DAILY_CHECK_TIME, get_settings().daily_check_time)
+
+
+async def get_draft_lead_days(session: AsyncSession) -> int:
+    value = await get_setting(session, KEY_DRAFT_LEAD_DAYS, str(get_settings().draft_lead_days))
+    try:
+        return max(0, int(value))
+    except ValueError:
+        return get_settings().draft_lead_days
+
+
+async def get_default_publish_time(session: AsyncSession) -> str:
+    return await get_setting(session, KEY_DEFAULT_PUBLISH_TIME, get_settings().default_publish_time)
