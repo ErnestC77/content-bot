@@ -99,8 +99,10 @@ class ContentTask(Base):
     draft_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     # наводящие вопросы текущего раунда (по одному на строку), пока не отвечены
     pending_questions: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # публиковать текст как цитату (Telegram blockquote)
+    # публиковать весь текст как цитату (Telegram blockquote)
     is_quote: Mapped[bool] = mapped_column(Boolean, default=False)
+    # либо только этот фрагмент текста — как цитата (взаимоисключимо с is_quote)
+    quote_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     rubric: Mapped[str] = mapped_column(String(255), default="")
     topic: Mapped[str] = mapped_column(String(500), default="")
     goal: Mapped[str] = mapped_column(String(500), default="")

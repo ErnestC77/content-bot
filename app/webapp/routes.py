@@ -80,6 +80,7 @@ def _task_dict(task: ContentTask, full: bool = False) -> dict:
         "text": task.final_text or (latest.text if latest else ""),
         "preview": (task.final_text or (latest.text if latest else ""))[:200],
         "is_quote": task.is_quote,
+        "quote_text": task.quote_text or "",
         "can_approve": task.status == TaskStatus.WAITING_FOR_APPROVAL.value,
         "can_generate": task.status == TaskStatus.SCHEDULED.value,
         "can_answer": task.status == TaskStatus.WAITING_FOR_ANSWERS.value,
@@ -252,12 +253,35 @@ async def skip_answers(task_id: int, request: Request, owner: int = Depends(requ
 
 @api.post("/tasks/{task_id}/quote")
 async def toggle_quote(task_id: int, session: AsyncSession = Depends(get_session_dependency)):
+    """Переключает «вся цитата». Взаимоисключимо с фрагментом — сбрасывает quote_text."""
     task = await content_tasks.get_task(session, task_id)
     if task is None:
         return {"error": "not found"}
     task.is_quote = not task.is_quote
+    if task.is_quote:
+        task.quote_text = None
     await session.commit()
     return {"ok": True, "is_quote": task.is_quote}
+
+
+class QuoteTextBody(BaseModel):
+    quote_text: str = ""
+
+
+@api.post("/tasks/{task_id}/quote_text")
+async def set_quote_text(
+    task_id: int, body: QuoteTextBody, session: AsyncSession = Depends(get_session_dependency)
+):
+    """Сохраняет выделенный владельцем фрагмент как цитату. Пустая строка — снять."""
+    task = await content_tasks.get_task(session, task_id)
+    if task is None:
+        return {"error": "not found"}
+    fragment = body.quote_text.strip()
+    task.quote_text = fragment or None
+    if fragment:
+        task.is_quote = False
+    await session.commit()
+    return {"ok": True, "quote_text": task.quote_text or ""}
 
 
 @api.post("/tasks/{task_id}/approve")

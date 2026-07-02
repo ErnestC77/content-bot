@@ -74,18 +74,34 @@ def _wrap_quote(text: str) -> str:
     return f"<blockquote>{html.escape(text)}</blockquote>"
 
 
+def _render_quote(text: str, task: ContentTask) -> tuple[str, bool]:
+    """Строит текст для отправки с учётом цитаты. Возвращает (display, use_html).
+
+    Приоритет: quote_text (выделенный фрагмент, если он ещё встречается в
+    текущем тексте) > is_quote (весь текст целиком) > обычный текст без разметки.
+    """
+    fragment = (task.quote_text or "").strip()
+    if fragment and fragment in text:
+        idx = text.find(fragment)
+        before = html.escape(text[:idx])
+        after = html.escape(text[idx + len(fragment) :])
+        return before + _wrap_quote(fragment) + after, True
+    if task.is_quote:
+        return _wrap_quote(text), True
+    return text, False
+
+
 async def _send_post(bot: Bot, channel_id: str, text: str, task: ContentTask) -> None:
     media = list(task.media)
-    parse_mode = "HTML" if task.is_quote else None
 
     if not media:
-        await _send_long_text(bot, channel_id, text, task.is_quote)
+        await _send_long_text(bot, channel_id, text, task)
         return
 
     # Фото/видео с текстом всегда уходят ОДНИМ сообщением: подпись Telegram
     # ограничена 1024 символами (лимит платформы), поэтому длинный текст
     # аккуратно обрезается по границе слова, а не разносится вторым сообщением.
-    caption = _build_caption(text, task.is_quote)
+    caption, parse_mode = _build_caption(text, task)
 
     if len(media) == 1:
         item = media[0]
@@ -121,16 +137,17 @@ def _truncate_at_word(text: str, limit: int) -> str:
     return cut.rstrip() + "…"
 
 
-def _build_caption(text: str, is_quote: bool) -> str:
-    """Подпись к медиа: весь текст, если помещается в лимит Telegram (1024 симв.),
-    иначе — обрезка по слову с многоточием. Полный текст поста при этом хранится
-    в БД и виден в Mini App без обрезки — обрезается только то, что уходит в канал.
+def _build_caption(text: str, task: ContentTask) -> tuple[str, str | None]:
+    """Подпись к медиа: весь текст (с цитатой, если задана), если помещается
+    в лимит Telegram (1024 симв.). Иначе — безопасный фолбэк: обычная обрезка
+    по слову БЕЗ разметки цитаты (чтобы не оборвать HTML-тег на полуслове).
+    Полный текст поста при этом хранится в БД и виден в Mini App без обрезки —
+    обрезается только то, что уходит в канал.
     """
-    if is_quote:
-        overhead = len("<blockquote></blockquote>")
-        truncated = _truncate_at_word(text, TELEGRAM_CAPTION_LIMIT - overhead)
-        return _wrap_quote(truncated)
-    return _truncate_at_word(text, TELEGRAM_CAPTION_LIMIT)
+    display, use_html = _render_quote(text, task)
+    if len(display) <= TELEGRAM_CAPTION_LIMIT:
+        return display, ("HTML" if use_html else None)
+    return _truncate_at_word(text, TELEGRAM_CAPTION_LIMIT), None
 
 
 def _media_source(item):
@@ -141,14 +158,15 @@ def _media_source(item):
     return BufferedInputFile(item.content or b"", filename=f"media_{item.id}.{ext}")
 
 
-async def _send_long_text(bot: Bot, channel_id: str, text: str, is_quote: bool = False) -> None:
-    # При цитате оставляем запас под теги <blockquote></blockquote> в каждом куске.
-    chunk_size = TELEGRAM_MESSAGE_LIMIT - 25 if is_quote else TELEGRAM_MESSAGE_LIMIT
-    parse_mode = "HTML" if is_quote else None
-    for i in range(0, len(text), chunk_size):
-        chunk = text[i : i + chunk_size]
-        display = _wrap_quote(chunk) if is_quote else chunk
-        await bot.send_message(chat_id=channel_id, text=display, parse_mode=parse_mode)
+async def _send_long_text(bot: Bot, channel_id: str, text: str, task: ContentTask) -> None:
+    display, use_html = _render_quote(text, task)
+    if len(display) <= TELEGRAM_MESSAGE_LIMIT:
+        await bot.send_message(chat_id=channel_id, text=display, parse_mode="HTML" if use_html else None)
+        return
+    # Не помещается даже в одно сообщение — безопасный фолбэк: обычные куски
+    # без разметки цитаты (чтобы не оборвать HTML-тег между сообщениями).
+    for i in range(0, len(text), TELEGRAM_MESSAGE_LIMIT):
+        await bot.send_message(chat_id=channel_id, text=text[i : i + TELEGRAM_MESSAGE_LIMIT])
 
 
 async def publish_task(bot: Bot, session: AsyncSession, task: ContentTask) -> PublishResult:
