@@ -73,45 +73,29 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Content Bot", lifespan=lifespan)
 
 
-CSRF_COOKIE = "csrf_token"
+from app.admin.auth import CSRF_COOKIE
 
 
 @app.middleware("http")
-async def admin_csrf_guard(request: Request, call_next):
-    """CSRF-защита админки по схеме double-submit cookie.
+async def admin_csrf_cookie(request: Request, call_next):
+    """Выдаёт CSRF-cookie на безопасные запросы админки и отдаёт токен шаблонам.
 
-    Basic Auth сам по себе уязвим к CSRF (браузер шлёт учётку автоматически).
-    Токен кладётся в HttpOnly-cookie и во все формы скрытым полем `_csrf`;
-    на небезопасные запросы значения должны совпасть. Атакующий с чужого сайта
-    не может прочитать HttpOnly-cookie, значит и подобрать поле не сможет.
-    Защита не зависит от заголовков Origin/Referer.
+    Саму проверку токена делает зависимость csrf_protect в роутере — там разбор
+    формы кешируется и корректно доходит до обработчика (в middleware читать тело
+    нельзя: это «съедает» body и ломает парсинг формы в эндпоинте).
     """
-    if not request.url.path.startswith("/admin"):
-        return await call_next(request)
-
-    cookie_token = request.cookies.get(CSRF_COOKIE)
-
-    if request.method not in ("GET", "HEAD", "OPTIONS"):
-        form = await request.form()
-        form_token = form.get("_csrf")
-        if not (
-            cookie_token
-            and form_token
-            and secrets.compare_digest(str(cookie_token), str(form_token))
-        ):
-            return Response(status_code=403, content="CSRF check failed")
-        return await call_next(request)
-
-    # Безопасные методы: гарантируем наличие токена и отдаём его шаблонам.
-    token = cookie_token or secrets.token_urlsafe(32)
-    request.state.csrf_token = token
-    response = await call_next(request)
-    if not cookie_token:
-        secure = request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
-        response.set_cookie(
-            CSRF_COOKIE, token, httponly=True, samesite="strict", secure=secure, max_age=86400
-        )
-    return response
+    if request.url.path.startswith("/admin") and request.method in ("GET", "HEAD", "OPTIONS"):
+        cookie_token = request.cookies.get(CSRF_COOKIE)
+        token = cookie_token or secrets.token_urlsafe(32)
+        request.state.csrf_token = token
+        response = await call_next(request)
+        if not cookie_token:
+            secure = request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+            response.set_cookie(
+                CSRF_COOKIE, token, httponly=True, samesite="strict", secure=secure, max_age=86400
+            )
+        return response
+    return await call_next(request)
 
 
 app.include_router(admin_router)

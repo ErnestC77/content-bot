@@ -10,7 +10,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.admin.auth import require_admin
+from app.admin.auth import csrf_protect, require_admin
 from app.ai import prompts
 from app.database.models import ContentTask, TaskStatus
 from app.database.session import get_session_dependency
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin), Depends(csrf_protect)])
 
 RUBRICS = [
     "Новинка", "Закулисье", "Полезный пост", "Отзыв",
