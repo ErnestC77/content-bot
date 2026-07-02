@@ -65,6 +65,8 @@ def _task_dict(task: ContentTask, full: bool = False) -> dict:
         "id": task.id,
         "publish_date": task.publish_date.isoformat(),
         "publish_time": task.publish_time.strftime("%H:%M") if task.publish_time else "",
+        "draft_date": task.draft_date.isoformat() if task.draft_date else "",
+        "draft_time": task.draft_time.strftime("%H:%M") if task.draft_time else "",
         "topic": task.topic or "",
         "rubric": task.rubric or "",
         "goal": task.goal or "",
@@ -119,9 +121,18 @@ class BulkBody(BaseModel):
 
 @api.post("/tasks/bulk")
 async def bulk_add(body: BulkBody, session: AsyncSession = Depends(get_session_dependency)):
-    raw = await get_setting(session, KEY_DEFAULT_PUBLISH_TIME, get_settings().default_publish_time)
+    s = get_settings()
+    raw = await get_setting(session, KEY_DEFAULT_PUBLISH_TIME, s.default_publish_time)
     hh, mm = (int(x) for x in raw.split(":"))
-    created, errors = await content_tasks.bulk_create_tasks(session, body.text, time(hh, mm))
+    lead_raw = await get_setting(session, KEY_DRAFT_LEAD_DAYS, str(s.draft_lead_days))
+    try:
+        lead_days = max(0, int(lead_raw))
+    except ValueError:
+        lead_days = s.draft_lead_days
+    default_t = time(hh, mm)
+    created, errors = await content_tasks.bulk_create_tasks(
+        session, body.text, default_t, lead_days, default_t
+    )
     await session.commit()
     return {"created": len(created), "errors": errors}
 
@@ -129,10 +140,19 @@ async def bulk_add(body: BulkBody, session: AsyncSession = Depends(get_session_d
 class EditBody(BaseModel):
     publish_date: str
     publish_time: str = ""
+    draft_date: str = ""
+    draft_time: str = ""
     topic: str = ""
     rubric: str = ""
     goal: str = ""
     description: str = ""
+
+
+def _parse_hhmm(value: str) -> time | None:
+    if not value:
+        return None
+    hh, mm = (int(x) for x in value.split(":"))
+    return time(hh, mm)
 
 
 @api.post("/tasks/{task_id}/edit")
@@ -141,9 +161,9 @@ async def edit_task(task_id: int, body: EditBody, session: AsyncSession = Depend
     if task is None:
         return {"error": "not found"}
     task.publish_date = date.fromisoformat(body.publish_date)
-    if body.publish_time:
-        hh, mm = (int(x) for x in body.publish_time.split(":"))
-        task.publish_time = time(hh, mm)
+    task.publish_time = _parse_hhmm(body.publish_time)
+    task.draft_date = date.fromisoformat(body.draft_date) if body.draft_date else None
+    task.draft_time = _parse_hhmm(body.draft_time)
     task.topic = body.topic
     task.rubric = body.rubric
     task.goal = body.goal

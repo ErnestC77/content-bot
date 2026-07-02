@@ -178,9 +178,12 @@ function taskCard(t) {
     actions += `<button class="act" onclick="doPublishNow(${t.id})">📢 Опубликовать сейчас</button>`;
   }
   const body = t.text ? `<div class="preview">${esc(t.text)}</div>` : "";
+  const meta = (t.can_generate && t.draft_date)
+    ? `#${t.id} · ✍️ черновик ${t.draft_date} ${t.draft_time||""} → 📢 публикация ${t.publish_date} ${t.publish_time||""}`
+    : `#${t.id} · 📢 ${t.publish_date} ${t.publish_time||""}`;
   return `<div class="card">
     <div class="top"><div><div class="topic">${esc(t.topic) || "(без темы)"}</div>
-      <div class="meta">#${t.id} · ${t.publish_date} ${t.publish_time||""}</div></div></div>
+      <div class="meta">${meta}</div></div></div>
     <div class="status">${esc(t.status_label)}</div>
     ${body}
     ${mediaChips(t)}
@@ -188,12 +191,25 @@ function taskCard(t) {
   </div>`;
 }
 
+let lastReady = [];
+let hideSent = false;
+
+function renderReady() {
+  const shown = hideSent ? lastReady.filter(t => t.status !== "published") : lastReady;
+  const toggle = lastReady.some(t => t.status === "published")
+    ? `<button class="act sec" style="margin-bottom:10px" onclick="toggleHideSent()">${hideSent ? "👁 Показать отправленные" : "🙈 Скрыть отправленные"}</button>`
+    : "";
+  document.getElementById("tab-ready").innerHTML =
+    toggle + (shown.length ? shown.map(taskCard).join("") : '<div class="empty">Готовых постов нет</div>');
+}
+function toggleHideSent() { hideSent = !hideSent; renderReady(); }
+
 async function loadTasks() {
   const data = await api("/tasks");
   const d = document.getElementById("tab-drafts");
-  const r = document.getElementById("tab-ready");
   d.innerHTML = data.drafts.length ? data.drafts.map(taskCard).join("") : '<div class="empty">Черновиков нет</div>';
-  r.innerHTML = data.ready.length ? data.ready.map(taskCard).join("") : '<div class="empty">Готовых постов нет</div>';
+  lastReady = data.ready;
+  renderReady();
 }
 
 function doApprove(id, btn){ run(btn, async () => { const res = await api(`/tasks/${id}/approve`,"POST"); toast(res.message||"Одобрено"); await loadTasks(); }); }
@@ -226,8 +242,10 @@ function doRevise(id){
 async function doEdit(id){
   const t = await api(`/tasks/${id}`);
   openModal("Изменить задачу", `
-    <label>Дата</label><input id="e-date" type="date" value="${t.publish_date}">
-    <label>Время</label><input id="e-time" type="time" value="${t.publish_time}">
+    <label>✍️ Дата подготовки черновика</label><input id="e-ddate" type="date" value="${t.draft_date}">
+    <label>Время подготовки</label><input id="e-dtime" type="time" value="${t.draft_time}">
+    <label>📢 Дата публикации</label><input id="e-date" type="date" value="${t.publish_date}">
+    <label>Время публикации</label><input id="e-time" type="time" value="${t.publish_time}">
     <label>Тема</label><input id="e-topic" value="${esc(t.topic)}">
     <label>Цель</label><input id="e-goal" value="${esc(t.goal)}">
     <label>Описание</label><textarea id="e-desc" rows="2">${esc(t.description)}</textarea>`,
@@ -235,11 +253,13 @@ async function doEdit(id){
       await api(`/tasks/${id}/edit`,"POST",{
         publish_date: document.getElementById("e-date").value,
         publish_time: document.getElementById("e-time").value,
+        draft_date: document.getElementById("e-ddate").value,
+        draft_time: document.getElementById("e-dtime").value,
         topic: document.getElementById("e-topic").value,
         goal: document.getElementById("e-goal").value,
         description: document.getElementById("e-desc").value,
       });
-      loadTasks();
+      toast("Сохранено"); loadTasks();
     });
 }
 

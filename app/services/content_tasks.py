@@ -86,9 +86,14 @@ def parse_schedule_line(line: str, default_time: time) -> tuple[date, time, str]
 
 
 async def bulk_create_tasks(
-    session: AsyncSession, text: str, default_time: time
+    session: AsyncSession, text: str, default_time: time, lead_days: int, draft_time: time
 ) -> tuple[list[ContentTask], list[str]]:
-    """Создаёт задачи по строкам «дата [время] — тема». Возвращает (созданные, ошибки)."""
+    """Создаёт задачи по строкам «дата [время] — тема».
+
+    Дата/время подготовки черновика вычисляются как публикация минус lead_days
+    (в draft_time), но дальше их можно редактировать независимо. Возвращает
+    (созданные, ошибки).
+    """
     created: list[ContentTask] = []
     errors: list[str] = []
     for raw in text.splitlines():
@@ -102,6 +107,8 @@ async def bulk_create_tasks(
         task = ContentTask(
             publish_date=d,
             publish_time=t,
+            draft_date=d - timedelta(days=lead_days),
+            draft_time=draft_time,
             topic=topic,
             status=TaskStatus.SCHEDULED.value,
             is_active=True,
@@ -122,19 +129,26 @@ def publish_datetime(task: ContentTask, tz: ZoneInfo, default_time: time) -> dat
     return datetime.combine(task.publish_date, t, tzinfo=tz)
 
 
+def draft_datetime(task: ContentTask, tz: ZoneInfo, default_time: time, lead_days: int) -> datetime:
+    """Дата+время подготовки черновика. Если не задано — публикация минус lead_days."""
+    if task.draft_date is not None:
+        t = task.draft_time or default_time
+        return datetime.combine(task.draft_date, t, tzinfo=tz)
+    base = publish_datetime(task, tz, default_time)
+    return base - timedelta(days=lead_days)
+
+
 async def tasks_due_for_draft(
-    session: AsyncSession, today: date, lead_days: int
+    session: AsyncSession, now: datetime, tz: ZoneInfo, default_time: time, lead_days: int
 ) -> list[ContentTask]:
-    """Активные scheduled-задачи, у которых пора готовить черновик (по дате)."""
-    threshold = today + timedelta(days=lead_days)
+    """Активные scheduled-задачи, у которых наступил момент подготовки черновика."""
     result = await session.scalars(
         select(ContentTask)
         .where(ContentTask.is_active.is_(True))
         .where(ContentTask.status == TaskStatus.SCHEDULED.value)
-        .where(ContentTask.publish_date <= threshold)
         .order_by(ContentTask.publish_date, ContentTask.publish_time)
     )
-    return list(result)
+    return [t for t in result if draft_datetime(t, tz, default_time, lead_days) <= now]
 
 
 async def tasks_due_for_publish(

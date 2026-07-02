@@ -43,9 +43,11 @@ async def _default_time(session) -> time:
 async def draft_generation_check(bot: Bot) -> None:
     """Готовит черновики для задач, у которых наступил момент подготовки."""
     owner_id = get_settings().owner_telegram_id
+    now = datetime.now(_tz())
     async with get_session() as session:
         lead = await get_draft_lead_days(session)
-        due = await content_tasks.tasks_due_for_draft(session, date.today(), lead)
+        default_time = await _default_time(session)
+        due = await content_tasks.tasks_due_for_draft(session, now, _tz(), default_time, lead)
         ids = [t.id for t in due]
     if not ids:
         return
@@ -107,10 +109,10 @@ def build_scheduler(bot: Bot) -> AsyncIOScheduler:
     settings = get_settings()
     scheduler = AsyncIOScheduler(timezone=settings.timezone)
 
-    hour, minute = (int(x) for x in settings.daily_check_time.split(":"))
+    # проверяем каждые 15 минут, чтобы уважать произвольное время подготовки черновика
     scheduler.add_job(
         draft_generation_check,
-        CronTrigger(hour=hour, minute=minute, timezone=settings.timezone),
+        CronTrigger(minute="*/15", timezone=settings.timezone),
         args=[bot],
         id="draft_generation_check",
         replace_existing=True,
