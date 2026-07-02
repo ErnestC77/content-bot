@@ -78,8 +78,8 @@
   <div id="tab-drafts"></div>
   <div id="tab-ready" class="hidden"></div>
   <div id="tab-add" class="hidden">
-    <label>Список постов (по одному на строку): <code>ГГГГ-ММ-ДД [ЧЧ:ММ] — тема</code></label>
-    <textarea id="bulk" rows="8" placeholder="2026-07-05 — Как выбрать велосипед&#10;2026-07-06 10:00 — Разбор ошибок"></textarea>
+    <label>Список постов (по одному на строку): <code>ДД-ММ-ГГГГ [ЧЧ:ММ] — тема</code></label>
+    <textarea id="bulk" rows="8" placeholder="05-07-2026 — Как выбрать велосипед&#10;06-07-2026 10:00 — Разбор ошибок"></textarea>
     <button class="primary" id="bulk-submit">Создать посты</button>
     <div id="bulk-result" class="meta"></div>
   </div>
@@ -135,6 +135,7 @@ document.querySelectorAll(".tabs button").forEach(b => {
 });
 
 function esc(s) { return (s||"").replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function fmtDate(iso) { if(!iso) return ""; const p=iso.split("-"); return p.length===3 ? `${p[2]}-${p[1]}-${p[0]}` : iso; }
 
 let toastTimer;
 function toast(msg) {
@@ -179,8 +180,8 @@ function taskCard(t) {
   }
   const body = t.text ? `<div class="preview">${esc(t.text)}</div>` : "";
   const meta = (t.can_generate && t.draft_date)
-    ? `#${t.id} · ✍️ черновик ${t.draft_date} ${t.draft_time||""} → 📢 публикация ${t.publish_date} ${t.publish_time||""}`
-    : `#${t.id} · 📢 ${t.publish_date} ${t.publish_time||""}`;
+    ? `#${t.id} · ✍️ черновик ${fmtDate(t.draft_date)} ${t.draft_time||""} → 📢 публикация ${fmtDate(t.publish_date)} ${t.publish_time||""}`
+    : `#${t.id} · 📢 ${fmtDate(t.publish_date)} ${t.publish_time||""}`;
   return `<div class="card">
     <div class="top"><div><div class="topic">${esc(t.topic) || "(без темы)"}</div>
       <div class="meta">${meta}</div></div></div>

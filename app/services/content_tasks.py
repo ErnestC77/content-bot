@@ -57,10 +57,29 @@ async def ensure_owner_user(session: AsyncSession, telegram_id: int, name: str) 
 
 # ---------- Разбор и массовое создание расписания ----------
 
-# Строка вида «2026-07-05 — Тема» или «2026-07-05 10:00 — Тема».
+# Строка вида «05-07-2026 — Тема», «05.07.2026 10:00 — Тема» или «2026-07-05 — Тема».
 _LINE_RE = re.compile(
-    r"^\s*(\d{4}-\d{2}-\d{2})\s*(\d{1,2}:\d{2})?\s*[—–\-|:•.]*\s*(.+?)\s*$"
+    r"^\s*((?:\d{4}-\d{1,2}-\d{1,2})|(?:\d{1,2}[.\-/]\d{1,2}[.\-/]\d{4}))"
+    r"\s*(\d{1,2}:\d{2})?\s*[—–\-|:•]*\s*(.+?)\s*$"
 )
+
+
+def _parse_date(token: str) -> date | None:
+    """Разбирает дату в форматах dd-mm-yyyy, dd.mm.yyyy, dd/mm/yyyy или yyyy-mm-dd."""
+    try:
+        parts = [int(p) for p in re.split(r"[.\-/]", token)]
+    except ValueError:
+        return None
+    if len(parts) != 3:
+        return None
+    if parts[0] > 31:  # год впереди -> yyyy-mm-dd
+        y, m, d = parts
+    else:  # dd-mm-yyyy
+        d, m, y = parts
+    try:
+        return date(y, m, d)
+    except ValueError:
+        return None
 
 
 def parse_schedule_line(line: str, default_time: time) -> tuple[date, time, str] | None:
@@ -71,9 +90,8 @@ def parse_schedule_line(line: str, default_time: time) -> tuple[date, time, str]
     date_str, time_str, topic = m.group(1), m.group(2), m.group(3)
     if not topic.strip():
         return None
-    try:
-        d = date.fromisoformat(date_str)
-    except ValueError:
+    d = _parse_date(date_str)
+    if d is None:
         return None
     t = default_time
     if time_str:
