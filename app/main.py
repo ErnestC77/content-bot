@@ -80,6 +80,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Content Bot", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def no_store_webapp(request: Request, call_next):
+    """Mini App и его API нельзя кэшировать — иначе webview показывает старые данные."""
+    response = await call_next(request)
+    if request.url.path.startswith("/webapp") or request.url.path.startswith("/api/webapp"):
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+    return response
+
+
 include_webapp(app)
 
 

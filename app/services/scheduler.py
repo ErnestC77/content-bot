@@ -109,20 +109,24 @@ def build_scheduler(bot: Bot) -> AsyncIOScheduler:
     settings = get_settings()
     scheduler = AsyncIOScheduler(timezone=settings.timezone)
 
-    # проверяем каждые 15 минут, чтобы уважать произвольное время подготовки черновика
+    # каждую минуту — чтобы произвольное время подготовки/публикации срабатывало вовремя
     scheduler.add_job(
         draft_generation_check,
-        CronTrigger(minute="*/15", timezone=settings.timezone),
+        CronTrigger(minute="*", timezone=settings.timezone),
         args=[bot],
         id="draft_generation_check",
         replace_existing=True,
+        misfire_grace_time=120,
+        max_instances=1,
     )
     scheduler.add_job(
         publish_check,
-        CronTrigger(minute="*/5", timezone=settings.timezone),
+        CronTrigger(minute="*", timezone=settings.timezone),
         args=[bot],
         id="publish_check",
         replace_existing=True,
+        misfire_grace_time=120,
+        max_instances=1,
     )
     scheduler.add_job(
         reminder_check,

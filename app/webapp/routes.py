@@ -1,8 +1,9 @@
 """Telegram Mini App: страница + JSON API. Авторизация — по initData (require_owner)."""
 
 import logging
-from datetime import date, time
+from datetime import date, datetime, time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import HTMLResponse
@@ -162,8 +163,14 @@ async def edit_task(task_id: int, body: EditBody, session: AsyncSession = Depend
         return {"error": "not found"}
     task.publish_date = date.fromisoformat(body.publish_date)
     task.publish_time = _parse_hhmm(body.publish_time)
-    task.draft_date = date.fromisoformat(body.draft_date) if body.draft_date else None
     task.draft_time = _parse_hhmm(body.draft_time)
+    if body.draft_date:
+        task.draft_date = date.fromisoformat(body.draft_date)
+    elif task.draft_time is not None:
+        # время задано, а дата пустая — считаем «сегодня» (по Москве), иначе время бы игнорировалось
+        task.draft_date = datetime.now(ZoneInfo(get_settings().timezone)).date()
+    else:
+        task.draft_date = None
     task.topic = body.topic
     task.rubric = body.rubric
     task.goal = body.goal

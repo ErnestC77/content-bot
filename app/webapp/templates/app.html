@@ -79,7 +79,7 @@
 </style>
 </head>
 <body>
-<header>🗂 Контент-панель</header>
+<header>🗂 Контент-панель <span id="refresh" style="float:right;cursor:pointer">⟳</span></header>
 <div class="tabs">
   <button data-tab="drafts" class="active">📝 Драфты</button>
   <button data-tab="ready">📢 Готовые</button>
@@ -116,8 +116,11 @@ tg.ready(); tg.expand();
 const INIT = tg.initData || "";
 
 async function api(path, method = "GET", body = null) {
-  const res = await fetch("/api/webapp" + path, {
+  let url = "/api/webapp" + path;
+  if (method === "GET") url += (url.includes("?") ? "&" : "?") + "_=" + Date.now();
+  const res = await fetch(url, {
     method,
+    cache: "no-store",
     headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": INIT },
     body: body ? JSON.stringify(body) : null,
   });
@@ -278,9 +281,10 @@ function doRevise(id){
 
 async function doEdit(id){
   const t = await api(`/tasks/${id}`);
+  const todayIso = new Date().toISOString().slice(0,10);
   openModal("Изменить задачу", `
-    <label>✍️ Дата подготовки черновика</label><input id="e-ddate" type="date" value="${t.draft_date}">
-    <label>Время подготовки</label><input id="e-dtime" type="time" value="${t.draft_time}">
+    <label>✍️ Дата подготовки черновика</label><input id="e-ddate" type="date" value="${t.draft_date || todayIso}">
+    <label>Время подготовки</label><input id="e-dtime" type="time" value="${t.draft_time || '10:00'}">
     <label>📢 Дата публикации</label><input id="e-date" type="date" value="${t.publish_date}">
     <label>Время публикации</label><input id="e-time" type="time" value="${t.publish_time}">
     <label>Тема</label><input id="e-topic" value="${esc(t.topic)}">
@@ -335,6 +339,12 @@ async function loadSettings() {
     tg.showAlert("Сохранено");
   };
 }
+
+// Обновление данных при возврате в приложение (webview держит страницу в фоне)
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loadTasks(); });
+window.addEventListener("focus", loadTasks);
+document.getElementById("refresh").onclick = () => { toast("Обновляю…"); loadTasks(); };
+if (tg.onEvent) { try { tg.onEvent("activated", loadTasks); } catch (e) {} }
 
 loadTasks();
 </script>
