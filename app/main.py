@@ -1,22 +1,20 @@
-"""Точка входа: FastAPI-приложение с ботом (webhook/polling), планировщиком и админкой."""
+"""Точка входа: FastAPI-приложение с ботом (webhook/polling), планировщиком и Mini App."""
 
 import asyncio
 import logging
 import secrets
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Update
+from aiogram.types import MenuButtonWebApp, Update, WebAppInfo
 from fastapi import FastAPI, Request, Response
-from fastapi.staticfiles import StaticFiles
 
-from app.admin.routes import router as admin_router
 from app.bot.handlers import router as bot_router
 from app.bot.middlewares import OwnerOnlyMiddleware
 from app.config.settings import get_settings
 from app.services.scheduler import build_scheduler
+from app.webapp.routes import include_webapp
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -60,6 +58,17 @@ async def lifespan(app: FastAPI):
         polling_task = asyncio.create_task(dp.start_polling(bot, handle_signals=False))
         logger.info("Бот запущен в режиме polling")
 
+    # Кнопка меню Telegram открывает Mini App (требует https-адрес)
+    base_url = settings.effective_webhook_url.rstrip("/")
+    if base_url.startswith("https://"):
+        try:
+            await bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(text="🗂 Панель", web_app=WebAppInfo(url=f"{base_url}/webapp"))
+            )
+            logger.info("Кнопка меню Mini App установлена")
+        except Exception:
+            logger.exception("Не удалось установить кнопку меню Mini App")
+
     try:
         yield
     finally:
@@ -71,37 +80,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Content Bot", lifespan=lifespan)
-
-
-from app.admin.auth import CSRF_COOKIE
-
-
-@app.middleware("http")
-async def admin_csrf_cookie(request: Request, call_next):
-    """Выдаёт CSRF-cookie на безопасные запросы админки и отдаёт токен шаблонам.
-
-    Саму проверку токена делает зависимость csrf_protect в роутере — там разбор
-    формы кешируется и корректно доходит до обработчика (в middleware читать тело
-    нельзя: это «съедает» body и ломает парсинг формы в эндпоинте).
-    """
-    if request.url.path.startswith("/admin") and request.method in ("GET", "HEAD", "OPTIONS"):
-        cookie_token = request.cookies.get(CSRF_COOKIE)
-        token = cookie_token or secrets.token_urlsafe(32)
-        request.state.csrf_token = token
-        response = await call_next(request)
-        if not cookie_token:
-            secure = request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
-            response.set_cookie(
-                CSRF_COOKIE, token, httponly=True, samesite="strict", secure=secure, max_age=86400
-            )
-        return response
-    return await call_next(request)
-
-
-app.include_router(admin_router)
-
-static_dir = Path(__file__).parent / "admin" / "static"
-app.mount("/admin-static", StaticFiles(directory=str(static_dir)), name="admin-static")
+include_webapp(app)
 
 
 @app.get("/health")
@@ -111,7 +90,7 @@ async def health():
 
 @app.get("/")
 async def root():
-    return {"service": "content-bot", "admin": "/admin"}
+    return {"service": "content-bot", "webapp": "/webapp"}
 
 
 @app.post("/webhook/{secret}")

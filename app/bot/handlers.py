@@ -116,9 +116,22 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
     await message.answer("Отменено.", reply_markup=kb.owner_menu())
 
 
+@router.message(Command("panel"))
 @router.message(Command("admin"))
-async def cmd_admin(message: Message) -> None:
-    await message.answer(f"Админ-панель: {_admin_base()}/admin\nВход по логину и паролю из настроек.")
+@router.message(F.text == "🗂 Панель")
+async def cmd_panel(message: Message) -> None:
+    base = _admin_base()
+    if base.startswith("https://"):
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+
+        kb_open = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🗂 Открыть панель", web_app=WebAppInfo(url=f"{base}/webapp"))
+        ]])
+        await message.answer("Управление контентом — в панели:", reply_markup=kb_open)
+    else:
+        await message.answer(
+            "Mini App доступен только по https. Локально используйте бота напрямую."
+        )
 
 
 @router.message(Command("settings"))
@@ -136,7 +149,7 @@ async def cmd_settings(message: Message) -> None:
         f"— Черновик готовится за {lead} дн. до публикации\n"
         f"— Время публикации по умолчанию: {def_time}\n"
         f"— AI-модель: {s.ai_model}\n\n"
-        f"Изменить всё это можно в админ-панели: {_admin_base()}/admin"
+        "Изменить всё это можно в панели — команда /panel."
     )
 
 

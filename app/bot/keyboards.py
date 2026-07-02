@@ -60,9 +60,10 @@ def addmedia_done_kb() -> InlineKeyboardMarkup:
 def owner_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📅 Календарь"), KeyboardButton(text="📝 Сгенерировать сейчас")],
-            [KeyboardButton(text="➕ Добавить посты"), KeyboardButton(text="📎 Добавить медиа")],
-            [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="📢 Канал")],
+            [KeyboardButton(text="🗂 Панель"), KeyboardButton(text="📅 Календарь")],
+            [KeyboardButton(text="📝 Сгенерировать сейчас"), KeyboardButton(text="📎 Добавить медиа")],
+            [KeyboardButton(text="➕ Добавить посты"), KeyboardButton(text="📢 Канал")],
+            [KeyboardButton(text="⚙️ Настройки")],
         ],
         resize_keyboard=True,
     )
