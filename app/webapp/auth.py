@@ -47,7 +47,7 @@ def validate_init_data(init_data: str) -> dict | None:
 
 
 async def require_owner(x_telegram_init_data: str = Header(default="")) -> int:
-    """FastAPI-зависимость: пускает только владельца Mini App."""
+    """FastAPI-зависимость: пускает владельца и активных админов Mini App."""
     data = validate_init_data(x_telegram_init_data)
     if data is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid initData")
@@ -56,6 +56,10 @@ async def require_owner(x_telegram_init_data: str = Header(default="")) -> int:
     except json.JSONDecodeError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="bad user")
     uid = user.get("id")
-    if uid != get_settings().owner_telegram_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="not owner")
+    from app.database.session import get_session
+    from app.services.access import is_authorized
+
+    async with get_session() as session:
+        if not await is_authorized(session, uid):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="not authorized")
     return uid

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import get_settings
 from app.database.models import ContentTask, TaskMedia, TaskStatus
 from app.database.session import get_session, get_session_dependency
-from app.services import approval, content_tasks
+from app.services import access, approval, content_tasks
 from app.services import media as media_service
 from app.services.content_tasks import STATUS_LABELS
 from app.services.settings_store import (
@@ -301,6 +301,30 @@ async def delete_media(task_id: int, media_id: int, session: AsyncSession = Depe
         await session.delete(m)
         await session.commit()
     return {"ok": True}
+
+
+class AdminBody(BaseModel):
+    telegram_id: int
+    name: str = ""
+
+
+@api.get("/admins")
+async def get_admins(session: AsyncSession = Depends(get_session_dependency)):
+    return {"admins": await access.list_admins(session)}
+
+
+@api.post("/admins")
+async def add_admin_api(body: AdminBody, session: AsyncSession = Depends(get_session_dependency)):
+    await access.add_admin(session, body.telegram_id, body.name)
+    await session.commit()
+    return {"ok": True}
+
+
+@api.post("/admins/{telegram_id}/delete")
+async def del_admin_api(telegram_id: int, session: AsyncSession = Depends(get_session_dependency)):
+    ok = await access.remove_admin(session, telegram_id)
+    await session.commit()
+    return {"ok": ok}
 
 
 @api.get("/settings")

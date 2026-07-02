@@ -325,7 +325,12 @@ async function loadSettings() {
     <label>AI-провайдер</label><input id="s-prov" value="${esc(s.ai_provider)}">
     <label>AI-модель</label><input id="s-model" value="${esc(s.ai_model)}">
     <label>Системный промт</label><textarea id="s-prompt" rows="10">${esc(s.system_prompt)}</textarea>
-    <button class="primary" id="s-save">Сохранить</button>`;
+    <button class="primary" id="s-save">Сохранить</button>
+    <div class="section-h" style="margin-top:20px">👥 Администраторы</div>
+    <div id="admins-list"></div>
+    <label>Telegram ID нового админа</label><input id="a-id" type="number" placeholder="напр. 626493899">
+    <label>Имя (необязательно)</label><input id="a-name" placeholder="Имя">
+    <button class="primary" id="a-add">Добавить админа</button>`;
   document.getElementById("s-save").onclick = async () => {
     await api("/settings","POST",{
       channel_id: document.getElementById("s-channel").value,
@@ -338,6 +343,28 @@ async function loadSettings() {
     });
     tg.showAlert("Сохранено");
   };
+  document.getElementById("a-add").onclick = async () => {
+    const id = parseInt(document.getElementById("a-id").value, 10);
+    if (!id) { toast("Укажите Telegram ID"); return; }
+    await api("/admins","POST",{ telegram_id: id, name: document.getElementById("a-name").value });
+    document.getElementById("a-id").value = ""; document.getElementById("a-name").value = "";
+    toast("Админ добавлен"); loadAdmins();
+  };
+  loadAdmins();
+}
+
+async function loadAdmins() {
+  const data = await api("/admins");
+  document.getElementById("admins-list").innerHTML = data.admins.map(a => `
+    <div class="chip" style="justify-content:space-between;width:100%;margin-bottom:6px;border-radius:8px">
+      <span>${a.role === "owner" ? "👑" : "🛡"} ${esc(a.name)} · <code>${a.telegram_id}</code></span>
+      ${a.removable ? `<b onclick="delAdmin(${a.telegram_id})">Удалить</b>` : '<span style="color:var(--hint)">владелец</span>'}
+    </div>`).join("");
+}
+async function delAdmin(id) {
+  tg.showConfirm("Убрать доступ у этого админа?", async ok => {
+    if (ok) { await api(`/admins/${id}/delete`,"POST"); toast("Удалён"); loadAdmins(); }
+  });
 }
 
 // Обновление данных при возврате в приложение (webview держит страницу в фоне)

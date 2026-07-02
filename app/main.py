@@ -11,7 +11,7 @@ from aiogram.types import MenuButtonWebApp, Update, WebAppInfo
 from fastapi import FastAPI, Request, Response
 
 from app.bot.handlers import router as bot_router
-from app.bot.middlewares import OwnerOnlyMiddleware
+from app.bot.middlewares import AccessMiddleware
 from app.config.settings import get_settings
 from app.services.scheduler import build_scheduler
 from app.webapp.routes import include_webapp
@@ -24,8 +24,8 @@ settings = get_settings()
 bot = Bot(token=settings.bot_token)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
-dp.message.middleware(OwnerOnlyMiddleware())
-dp.callback_query.middleware(OwnerOnlyMiddleware())
+dp.message.middleware(AccessMiddleware())
+dp.callback_query.middleware(AccessMiddleware())
 dp.include_router(bot_router)
 
 
@@ -36,6 +36,18 @@ async def lifespan(app: FastAPI):
 
     scheduler = build_scheduler(bot)
     scheduler.start()
+
+    # Первичное заполнение админов из SEED_ADMIN_IDS (идемпотентно)
+    if settings.seed_admin_ids:
+        from app.database.session import get_session
+        from app.services.access import seed_admins
+
+        ids = [int(x) for x in settings.seed_admin_ids.split(",") if x.strip().isdigit()]
+        if ids:
+            async with get_session() as session:
+                await seed_admins(session, ids)
+                await session.commit()
+            logger.info("Сид админов: %s", ids)
 
     polling_task: asyncio.Task | None = None
     if settings.bot_mode == "webhook":

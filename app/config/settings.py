@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     webhook_secret: str = "change-me"
     # Render автоматически прокидывает публичный URL сервиса сюда.
     render_external_url: str = ""
+    # ID админов для первичного заполнения (через запятую); создаются один раз при старте
+    seed_admin_ids: str = ""
 
     @property
     def effective_webhook_url(self) -> str:
