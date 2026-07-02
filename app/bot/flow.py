@@ -9,11 +9,12 @@ from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
+from sqlalchemy import delete, update
 
+from app.database.models import ApprovalAction, ContentTask, TaskAnswer, TaskStatus
 from app.config.settings import get_settings
-from app.database.models import ApprovalAction, TaskStatus
 from app.database.session import get_session
-from app.services import approval, content_tasks, publishing
+from app.services import approval, audit, content_tasks, publishing
 from app.services.notify import broadcast
 from app.services.settings_store import get_default_publish_time
 
@@ -34,17 +35,45 @@ async def ask_questions(bot: Bot, task_id: int, owner_id: int) -> bool:
     """Готовит 1–3 наводящих вопроса по теме и переводит задачу в ожидание ответов.
 
     Вопросы помогают AI написать более точный черновик — владелец отвечает
-    в Mini App, после чего вызывается generate_from_answers().
+    в Mini App, после чего вызывается generate_from_answers(). Для одной задачи
+    всегда ровно ОДНО актуальное окно вопросов — не плодятся:
+      - переход scheduled -> waiting_for_answers атомарный (compare-and-swap),
+        поэтому одновременный повторный клик/тик планировщика не запускает
+        генерацию дважды и не шлёт повторное уведомление;
+      - повторный вызов из waiting_for_answers (после правки темы/цели) ЗАМЕНЯЕТ
+        вопросы на месте и удаляет ответы прошлого раунда, а не копит их.
     """
     async with get_session() as session:
         task = await content_tasks.get_task(session, task_id)
-        if task is None or not task.is_active or task.status != TaskStatus.SCHEDULED.value:
+        if task is None or not task.is_active:
             return False
-        topic = task.topic
 
+        if task.status == TaskStatus.SCHEDULED.value:
+            locked = await session.execute(
+                update(ContentTask)
+                .where(ContentTask.id == task_id)
+                .where(ContentTask.status == TaskStatus.SCHEDULED.value)
+                .values(status=TaskStatus.WAITING_FOR_ANSWERS.value)
+            )
+            if locked.rowcount != 1:
+                # кто-то другой (другой админ / параллельный клик) уже начал — не дублируем
+                await session.rollback()
+                return False
+            await audit.log_action(
+                session, task_id, "questions_asked",
+                old_status=TaskStatus.SCHEDULED.value, new_status=TaskStatus.WAITING_FOR_ANSWERS.value,
+            )
+            await session.commit()
+        elif task.status != TaskStatus.WAITING_FOR_ANSWERS.value:
+            return False
+        else:
+            # переспрашиваем: старые ответы относились к прежним вопросам — не смешиваем раунды
+            await session.execute(delete(TaskAnswer).where(TaskAnswer.task_id == task_id))
+
+        task = await content_tasks.get_task(session, task_id)
+        topic = task.topic
         questions = await content_tasks.generate_questions(session, task)
         task.pending_questions = "\n".join(questions)
-        await approval.change_status(session, task, TaskStatus.WAITING_FOR_ANSWERS)
         await session.commit()
 
     await broadcast(bot, f"❓ Есть вопросы по посту «{topic}» — ответьте в панели, чтобы я подготовил черновик.")

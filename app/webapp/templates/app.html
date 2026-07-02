@@ -109,7 +109,7 @@
     <div id="modal-title" style="font-weight:600;margin-bottom:8px"></div>
     <div id="modal-body"></div>
     <div class="actions" style="justify-content:flex-end;margin-top:14px">
-      <button class="act sec" onclick="closeModal()">Отмена</button>
+      <button class="act sec" id="modal-cancel" onclick="closeModal()">Отмена</button>
       <button class="act" id="modal-ok">ОК</button>
     </div>
   </div>
@@ -134,11 +134,14 @@ async function api(path, method = "GET", body = null) {
 }
 
 // ---- модалка ----
-function openModal(title, bodyHtml, onOk) {
+function openModal(title, bodyHtml, onOk, opts) {
+  opts = opts || {};
   document.getElementById("modal-title").textContent = title;
   document.getElementById("modal-body").innerHTML = bodyHtml;
   const ok = document.getElementById("modal-ok");
+  ok.textContent = opts.okLabel || "ОК";
   ok.onclick = async () => { await onOk(); closeModal(); };
+  document.getElementById("modal-cancel").textContent = opts.cancelLabel || "Отмена";
   document.getElementById("modal-bg").style.display = "flex";
 }
 function closeModal() { document.getElementById("modal-bg").style.display = "none"; }
@@ -214,6 +217,7 @@ function questionsBlock(t) {
     <div class="actions">
       <button class="act" onclick="doSubmitAnswers(${t.id}, this)">✅ Ответить и сгенерировать</button>
       <button class="act sec" onclick="doSkipAnswers(${t.id}, this)">⏭ Пропустить</button>
+      <button class="act sec" onclick="doEdit(${t.id})">◀ Назад: изменить тему/цель</button>
     </div>
   </div>`;
 }
@@ -337,9 +341,17 @@ async function doClearQuoteText(id){ await api(`/tasks/${id}/quote_text`, "POST"
 function doCancel(id){ tg.showConfirm("Отменить задачу?", async ok => { if(ok){ await api(`/tasks/${id}/cancel`,"POST"); toast("Отменено"); await loadTasks(); } }); }
 function doDelete(id){ tg.showConfirm("Удалить задачу?", async ok => { if(ok){ await api(`/tasks/${id}/delete`,"POST"); toast("Удалено"); await loadTasks(); } }); }
 
+const MAX_UPLOAD_MB = 45;
+
 async function uploadMedia(id, input){
   const file = input.files[0]; if(!file) return;
-  toast(`Загружаю ${(file.size/1024/1024).toFixed(1)} МБ…`);
+  const sizeMb = file.size / 1024 / 1024;
+  if (sizeMb > MAX_UPLOAD_MB) {
+    tg.showAlert(`Файл ${sizeMb.toFixed(1)} МБ — больше лимита в ${MAX_UPLOAD_MB} МБ. Выберите файл поменьше.`);
+    input.value = "";
+    return;
+  }
+  toast(`Загружаю ${sizeMb.toFixed(1)} МБ…`);
   const fd = new FormData(); fd.append("file", file);
   let res;
   try {
@@ -371,7 +383,8 @@ function doRevise(id){
 async function doEdit(id){
   const t = await api(`/tasks/${id}`);
   const todayIso = new Date().toISOString().slice(0,10);
-  openModal("Изменить задачу", `
+  const fromQuestions = t.status === "waiting_for_answers";
+  openModal(fromQuestions ? "Изменить тему/цель поста" : "Изменить задачу", `
     <label>✍️ Дата подготовки черновика</label><input id="e-ddate" type="date" value="${t.draft_date || todayIso}">
     <label>Время подготовки</label><input id="e-dtime" type="time" value="${t.draft_time || '10:00'}">
     <label>📢 Дата публикации</label><input id="e-date" type="date" value="${t.publish_date}">
@@ -389,8 +402,15 @@ async function doEdit(id){
         goal: document.getElementById("e-goal").value,
         description: document.getElementById("e-desc").value,
       });
-      toast("Сохранено"); loadTasks();
-    });
+      if (fromQuestions) {
+        toast("Сохранено — обновляю вопросы…");
+        await api(`/tasks/${id}/generate`, "POST");
+      } else {
+        toast("Сохранено");
+      }
+      loadTasks();
+    },
+    fromQuestions ? { okLabel: "Сохранить и обновить вопросы", cancelLabel: "◀ Вернуться к вопросам" } : {});
 }
 
 document.getElementById("bulk-submit").onclick = async () => {

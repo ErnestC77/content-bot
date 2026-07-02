@@ -227,12 +227,29 @@ async def generate_questions(session: AsyncSession, task: ContentTask) -> list[s
         model = await get_ai_model(session)
         provider = get_provider(provider_name, model)
         raw = await provider.generate(await system_prompt(session), prompts.build_questions_prompt(task))
-        questions = [line.strip(" -•\t") for line in raw.splitlines() if line.strip()]
-        questions = [q for q in questions if q][:3]
+        # Оставляем только строки-вопросы (заканчиваются на «?») — так рассуждения
+        # или вступление модели («Вот несколько вопросов:» и т.п.) не попадают
+        # в то, что видит владелец.
+        lines = [line.strip(" -•\t") for line in raw.splitlines() if line.strip()]
+        questions = [q for q in lines if q.endswith("?")][:3]
         return questions or prompts.QUESTION_FALLBACK
     except AIError:
         logger.warning("Не удалось сгенерировать вопросы через AI, использую запасные")
         return prompts.QUESTION_FALLBACK
+
+
+def extract_marked(text: str) -> str:
+    """Достаёт чистый текст поста между метками POST_START/POST_END.
+
+    Защита от того, что модель добавит вступление/рассуждения до или после
+    самого текста поста, несмотря на инструкцию в промте. Если меток нет
+    (модель их не поставила) — возвращает исходный текст как есть.
+    """
+    start = text.find(prompts.POST_START)
+    end = text.find(prompts.POST_END)
+    if start != -1 and end != -1 and end > start:
+        return text[start + len(prompts.POST_START) : end].strip()
+    return text.strip()
 
 
 async def _next_version_number(task: ContentTask) -> int:
@@ -265,7 +282,8 @@ async def generate_post_version(
     else:
         prompt = prompts.build_generation_prompt(task)
 
-    text = await provider.generate(await system_prompt(session), prompt)
+    raw_text = await provider.generate(await system_prompt(session), prompt)
+    text = extract_marked(raw_text)
 
     version = GeneratedPost(
         task_id=task.id,

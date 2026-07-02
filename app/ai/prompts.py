@@ -121,12 +121,27 @@ def build_questions_prompt(task: ContentTask) -> str:
     )
 
 
+# Метки, между которыми модель обязана вернуть ЧИСТЫЙ текст поста — без вступлений
+# вроде «Вот черновик поста:» или рассуждений до/после. Это не публикуется, только
+# используется для извлечения (см. content_tasks.extract_marked) — защита от того,
+# что комментарии модели случайно попадут в текст, отправляемый в канал/на согласование.
+POST_START = "===ПОСТ==="
+POST_END = "===КОНЕЦ==="
+
+_MARKER_INSTRUCTION = (
+    f"\n\nОБЯЗАТЕЛЬНО верни результат строго между метками {POST_START} и {POST_END}, "
+    "без единого слова до или после меток — ни вступления, ни пояснений, ни рассуждений. "
+    "Внутри меток — только сам текст поста, готовый к публикации."
+)
+
+
 def build_generation_prompt(task: ContentTask) -> str:
     return (
         "Напиши черновик поста для Telegram-канала.\n\n"
         f"{_task_block(task)}\n\n"
         f"{_answers_block(task)}\n\n"
         f"{_media_block(task)}"
+        f"{_MARKER_INSTRUCTION}"
     )
 
 
@@ -137,6 +152,7 @@ def build_revision_prompt(task: ContentTask, previous_text: str, revision_commen
         f"{_task_block(task)}\n\n"
         f"Текущий черновик:\n{previous_text}\n\n"
         f"Правки владельца:\n{revision_comment}"
+        f"{_MARKER_INSTRUCTION}"
     )
 
 
@@ -147,4 +163,5 @@ def build_alternative_prompt(task: ContentTask, previous_text: str) -> str:
         f"{_task_block(task)}\n\n"
         f"{_answers_block(task)}\n\n"
         f"Предыдущий вариант (не повторяй его структуру):\n{previous_text}"
+        f"{_MARKER_INSTRUCTION}"
     )
