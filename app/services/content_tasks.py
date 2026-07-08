@@ -345,26 +345,37 @@ async def generate_post_version(
     revision_comment: str | None = None,
     user_id: int | None = None,
 ) -> GeneratedPost:
-    """Генерирует новую версию поста и сохраняет её.
+    """Генерирует новую версию поста или опроса (по task.task_type) и сохраняет её.
 
     kind: initial | revision | alternative.
-    Бросает AIError, если провайдер недоступен — статус при этом НЕ переводится
-    в waiting_for_approval (это делает вызывающий код только при успехе).
+    Бросает AIError, если провайдер недоступен, или PollValidationError, если
+    ИИ вернул некорректный опрос — статус при этом НЕ переводится в
+    waiting_for_approval (это делает вызывающий код только при успехе).
     """
     provider_name = await get_ai_provider(session)
     model = await get_ai_model(session)
     provider = get_provider(provider_name, model)
 
+    is_poll = task.task_type == TaskType.POLL.value
     previous = task.posts[-1].text if task.posts else ""
     if kind == "revision":
-        prompt = prompts.build_revision_prompt(task, previous, revision_comment or "")
+        builder = prompts.build_poll_revision_prompt if is_poll else prompts.build_revision_prompt
+        prompt = builder(task, previous, revision_comment or "")
     elif kind == "alternative":
-        prompt = prompts.build_alternative_prompt(task, previous)
+        builder = prompts.build_poll_alternative_prompt if is_poll else prompts.build_alternative_prompt
+        prompt = builder(task, previous)
     else:
-        prompt = prompts.build_generation_prompt(task)
+        builder = prompts.build_poll_prompt if is_poll else prompts.build_generation_prompt
+        prompt = builder(task)
 
     raw_text = await provider.generate(await system_prompt(session), prompt)
     text = extract_marked(raw_text)
+    if is_poll:
+        # Бросает PollValidationError ДО сохранения версии, если ИИ вернул
+        # некорректный опрос. Вызывающий код (app/bot/flow.py) уже ловит любое
+        # исключение из generate_post_version как общий сбой генерации — то же
+        # сообщение владельцу «AI недоступен», без сохранения битого черновика.
+        parse_poll_draft(text)
 
     version = GeneratedPost(
         task_id=task.id,

@@ -165,3 +165,41 @@ def build_alternative_prompt(task: ContentTask, previous_text: str) -> str:
         f"Предыдущий вариант (не повторяй его структуру):\n{previous_text}"
         f"{_MARKER_INSTRUCTION}"
     )
+
+
+def build_poll_prompt(task: ContentTask) -> str:
+    return (
+        "Придумай опрос (голосование) для Telegram-канала на основе задачи из календаря.\n\n"
+        f"{_task_block(task)}\n\n"
+        f"{_answers_block(task)}\n\n"
+        "Сформулируй короткий вопрос и от 2 до 5 коротких вариантов ответа.\n"
+        "Верни вопрос первой строкой, каждый вариант ответа — с новой строки, "
+        "без нумерации и пояснений."
+        f"{_MARKER_INSTRUCTION}"
+    )
+
+
+def build_poll_revision_prompt(task: ContentTask, previous_text: str, revision_comment: str) -> str:
+    return (
+        "Ниже черновик опроса (вопрос и варианты ответа) и правки владельца. "
+        "Перепиши его с учётом правок, сохранив задачу.\n\n"
+        f"{_task_block(task)}\n\n"
+        f"Текущий черновик опроса:\n{previous_text}\n\n"
+        f"Правки владельца:\n{revision_comment}\n\n"
+        "Верни вопрос первой строкой, каждый вариант ответа — с новой строки, "
+        "без нумерации и пояснений."
+        f"{_MARKER_INSTRUCTION}"
+    )
+
+
+def build_poll_alternative_prompt(task: ContentTask, previous_text: str) -> str:
+    return (
+        "Владельцу не подошёл вариант опроса ниже. Придумай другой опрос на ту же "
+        "задачу: другой вопрос или другие варианты, но та же тема.\n\n"
+        f"{_task_block(task)}\n\n"
+        f"{_answers_block(task)}\n\n"
+        f"Предыдущий вариант (не повторяй его):\n{previous_text}\n\n"
+        "Верни вопрос первой строкой, каждый вариант ответа — с новой строки, "
+        "без нумерации и пояснений."
+        f"{_MARKER_INSTRUCTION}"
+    )
