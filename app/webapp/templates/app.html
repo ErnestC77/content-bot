@@ -100,9 +100,12 @@
       Указанные дата и время — это когда бот подготовит <b>черновик</b> (задаст вопросы
       и сгенерирует пост). Дата публикации в канал вычислится автоматически
       (черновик + лид-тайм из настроек) и её можно поменять отдельно в карточке поста.
+      Чтобы строка стала опросом, а не постом — поставьте перед темой 📊:
+      <code>05-07-2026 — 📊 Какой формат вам интереснее?</code>
     </p>
-    <textarea id="bulk" rows="8" placeholder="05-07-2026 — Как выбрать велосипед&#10;06-07-2026 10:00 — Разбор ошибок"></textarea>
+    <textarea id="bulk" rows="8" placeholder="05-07-2026 — Как выбрать велосипед&#10;06-07-2026 10:00 — 📊 Какой формат вам интереснее?"></textarea>
     <button class="primary" id="bulk-submit">Создать посты</button>
+    <button class="act sec" onclick="doAddPoll()" style="margin-top:6px">📊 Быстро добавить один опрос</button>
     <div id="bulk-result" class="meta"></div>
   </div>
   <div id="tab-settings" class="hidden"></div>
@@ -279,7 +282,13 @@ function quoteToggle(t) {
   </label>${fragmentNote}`;
 }
 
+function pollPreview(t) {
+  const opts = (t.poll_options || []).map((o, i) => `${i + 1}. ${esc(o)}`).join("<br>");
+  return `<div class="preview">📊 <b>${esc(t.poll_question || "")}</b><br><br>${opts}</div>`;
+}
+
 function taskCard(t) {
+  const isPoll = t.task_type === "poll";
   let actions = "";
   if (t.can_approve) {
     actions = `
@@ -295,18 +304,23 @@ function taskCard(t) {
   if (t.can_publish) {
     actions += `<button class="act" onclick="doPublishNow(${t.id})">📢 Опубликовать сейчас</button>`;
   }
-  const body = postText(t);
+  if (!isPoll && t.status !== "cancelled") {
+    actions += `<button class="act sec" onclick="doAddPoll(${t.id}, '${t.publish_date}')">📊 Опрос к этому посту</button>`;
+  }
+  const body = isPoll ? pollPreview(t) : postText(t);
   const meta = (t.can_generate && t.draft_date)
     ? `#${t.id} · ✍️ черновик ${fmtDate(t.draft_date)} ${t.draft_time||""} → 📢 публикация ${fmtDate(t.publish_date)} ${t.publish_time||""}`
     : `#${t.id} · 📢 ${fmtDate(t.publish_date)} ${t.publish_time||""}`;
+  const relatedNote = t.related_topic
+    ? `<div class="meta">🗳 к посту «${esc(t.related_topic)}»</div>` : "";
   return `<div class="card">
-    <div class="top"><div><div class="topic">${esc(t.topic) || "(без темы)"}</div>
-      <div class="meta">${meta}</div></div></div>
+    <div class="top"><div><div class="topic">${isPoll ? "📊 " : ""}${esc(t.topic) || "(без темы)"}</div>
+      <div class="meta">${meta}</div>${relatedNote}</div></div>
     <div class="status">${esc(t.status_label)}</div>
     ${body}
     ${questionsBlock(t)}
-    ${quoteToggle(t)}
-    ${mediaChips(t)}
+    ${isPoll ? "" : quoteToggle(t)}
+    ${isPoll ? "" : mediaChips(t)}
     <div class="actions">${actions}</div>
   </div>`;
 }
@@ -441,6 +455,28 @@ async function doEdit(id){
       loadTasks();
     },
     fromQuestions ? { okLabel: "Сохранить и обновить вопросы", cancelLabel: "◀ Вернуться к вопросам" } : {});
+}
+
+function doAddPoll(relatedId, relatedDate){
+  const todayIso = new Date().toISOString().slice(0,10);
+  const title = relatedId ? "Опрос к посту" : "Добавить опрос";
+  openModal(title, `
+    <label>Тема опроса</label><input id="p-topic" placeholder="Какой формат вам интереснее?">
+    <label>✍️ Дата подготовки черновика</label><input id="p-date" type="date" value="${relatedDate || todayIso}">
+    <label>Время подготовки</label><input id="p-time" type="time" value="10:00">`,
+    async () => {
+      const topic = document.getElementById("p-topic").value.trim();
+      if (!topic) return;
+      const res = await api("/tasks/poll", "POST", {
+        topic,
+        draft_date: document.getElementById("p-date").value,
+        draft_time: document.getElementById("p-time").value || "10:00",
+        related_task_id: relatedId || null,
+      });
+      if (!res.ok) { tg.showAlert(res.message || "Не удалось добавить опрос."); return; }
+      toast("Опрос добавлен ✓");
+      await loadTasks();
+    });
 }
 
 document.getElementById("bulk-submit").onclick = async () => {
