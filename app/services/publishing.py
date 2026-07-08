@@ -12,7 +12,7 @@ import logging
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BufferedInputFile, InputMediaPhoto, InputMediaVideo
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import (
@@ -52,6 +52,18 @@ async def _acquire_publishing_lock(session: AsyncSession, task_id: int) -> bool:
         .values(status=TaskStatus.PUBLISHING.value)
     )
     return result.rowcount == 1
+
+
+async def _find_approved_linked_poll(session: AsyncSession, post_id: int) -> ContentTask | None:
+    """Опрос, привязанный к посту (related_task_id), уже одобренный владельцем
+    и ожидающий публикации — используется, чтобы отправить его следом за
+    постом одним действием, без отдельного клика «Опубликовать» для опроса."""
+    return await session.scalar(
+        select(ContentTask)
+        .where(ContentTask.task_type == TaskType.POLL.value)
+        .where(ContentTask.related_task_id == post_id)
+        .where(ContentTask.status == TaskStatus.APPROVED.value)
+    )
 
 
 async def _check_bot_is_admin(bot: Bot, channel_id: str) -> None:
@@ -279,4 +291,15 @@ async def publish_task(bot: Bot, session: AsyncSession, task: ContentTask) -> Pu
         new_status=TaskStatus.PUBLISHED.value,
     )
     await session.commit()
-    return PublishResult(True, "Пост опубликован в канал ✅")
+
+    message = "Пост опубликован в канал ✅"
+    if task.task_type == TaskType.POST.value:
+        # уже одобренный владельцем связанный опрос уходит следом одним
+        # действием — без отдельного клика «Опубликовать» для него
+        linked_poll = await _find_approved_linked_poll(session, task.id)
+        if linked_poll is not None:
+            poll_result = await publish_task(bot, session, linked_poll)
+            message += " + опрос " + (
+                "опубликован ✅" if poll_result.ok else f"не опубликован ({poll_result.message})"
+            )
+    return PublishResult(True, message)
