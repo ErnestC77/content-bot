@@ -177,7 +177,10 @@ async def add_poll(body: AddPollBody, session: AsyncSession = Depends(get_sessio
         lead_days = max(0, int(lead_raw))
     except ValueError:
         lead_days = s.draft_lead_days
-    d = date.fromisoformat(body.draft_date)
+    try:
+        d = date.fromisoformat(body.draft_date)
+    except ValueError:
+        return {"ok": False, "message": "Некорректная дата."}
     t = _parse_hhmm(body.draft_time) or default_t
     task = ContentTask(
         draft_date=d,
