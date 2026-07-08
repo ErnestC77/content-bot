@@ -15,6 +15,7 @@ from app.database.models import (
     ContentTask,
     GeneratedPost,
     TaskStatus,
+    TaskType,
     User,
     UserRole,
 )
@@ -63,6 +64,48 @@ _LINE_RE = re.compile(
     r"^\s*((?:\d{4}-\d{1,2}-\d{1,2})|(?:\d{1,2}[.\-/]\d{1,2}[.\-/]\d{4}))"
     r"\s*(\d{1,2}:\d{2})?\s*[—–\-|:•]*\s*(.+?)\s*$"
 )
+
+POLL_MARKER = "📊"
+
+
+def detect_task_type(topic: str) -> tuple[str, str]:
+    """Возвращает (task_type, тема без метки).
+
+    Метка POLL_MARKER в начале темы означает, что строка массового добавления
+    описывает опрос, а не обычный пост — так можно смешивать посты и опросы
+    в одном списке.
+    """
+    if topic.startswith(POLL_MARKER):
+        return TaskType.POLL.value, topic[len(POLL_MARKER):].strip()
+    return TaskType.POST.value, topic
+
+
+class PollValidationError(ValueError):
+    """Черновик опроса не проходит ограничения Telegram (см. parse_poll_draft)."""
+
+
+def parse_poll_draft(text: str) -> tuple[str, list[str]]:
+    """Разбирает сериализованный черновик опроса: 1-я непустая строка — вопрос,
+    остальные непустые строки — варианты ответа.
+
+    Бросает PollValidationError, если вопрос пуст, вариантов меньше 2 или
+    больше 10, либо превышены лимиты длины Telegram (вопрос ≤300 символов,
+    вариант ≤100 символов).
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        raise PollValidationError("Опрос пуст: нет ни вопроса, ни вариантов ответа.")
+    question, options = lines[0], lines[1:]
+    if len(question) > 300:
+        raise PollValidationError(f"Вопрос длиннее 300 символов ({len(question)}).")
+    if len(options) < 2:
+        raise PollValidationError(f"Нужно минимум 2 варианта ответа, получено {len(options)}.")
+    if len(options) > 10:
+        raise PollValidationError(f"Максимум 10 вариантов ответа, получено {len(options)}.")
+    too_long = next((o for o in options if len(o) > 100), None)
+    if too_long:
+        raise PollValidationError(f"Вариант ответа длиннее 100 символов: «{too_long[:40]}…»")
+    return question, options
 
 
 def _parse_date(token: str) -> date | None:
@@ -124,12 +167,14 @@ async def bulk_create_tasks(
             errors.append(raw.strip())
             continue
         d, t, topic = parsed
+        task_type, topic = detect_task_type(topic)
         task = ContentTask(
             draft_date=d,
             draft_time=t,
             publish_date=d + timedelta(days=lead_days),
             publish_time=default_publish_time,
             topic=topic,
+            task_type=task_type,
             status=TaskStatus.SCHEDULED.value,
             is_active=True,
         )
