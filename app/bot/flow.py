@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot
 from sqlalchemy import delete, update
 
-from app.database.models import ApprovalAction, ContentTask, TaskAnswer, TaskStatus
+from app.database.models import ApprovalAction, ContentTask, TaskAnswer, TaskStatus, TaskType
 from app.config.settings import get_settings
 from app.database.session import get_session
 from app.services import approval, audit, content_tasks, publishing
@@ -166,3 +166,30 @@ async def approve_task(bot: Bot, task_id: int, user_tg_id: int, user_name: str) 
             result = await publishing.publish_task(bot, session, task)
         return f"✅ Одобрено. Время уже наступило — {result.message}"
     return f"✅ Одобрено. Опубликую автоматически {pub_dt:%d.%m в %H:%M}."
+
+
+async def save_manual_poll_edit(
+    bot: Bot, task_id: int, owner_id: int, question: str, options: list[str]
+) -> str:
+    """Сохраняет вручную отредактированный черновик опроса — без обращения к ИИ.
+
+    Альтернатива «Правкам»/«Варианту» (которые перегенерируют через ИИ) —
+    здесь владелец напрямую переписывает вопрос и варианты ответа. Возвращает
+    сообщение для владельца: подтверждение либо причину отказа.
+    """
+    async with get_session() as session:
+        task = await content_tasks.get_task(session, task_id)
+        if task is None or task.task_type != TaskType.POLL.value:
+            return "Опрос не найден."
+        if task.status != TaskStatus.WAITING_FOR_APPROVAL.value:
+            return f"Редактировать нельзя: статус «{task.status}»."
+        user = await content_tasks.ensure_owner_user(session, owner_id, "owner")
+        text = "\n".join([question, *options])
+        try:
+            await content_tasks.create_manual_version(session, task, text=text, user_id=user.id)
+        except content_tasks.PollValidationError as exc:
+            await session.rollback()
+            return str(exc)
+        await session.commit()
+    await broadcast(bot, "✏️ Опрос отредактирован вручную — откройте панель.")
+    return "Сохранено ✓"

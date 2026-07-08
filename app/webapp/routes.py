@@ -374,6 +374,25 @@ async def alternative(task_id: int, request: Request, owner: int = Depends(requi
     return {"ok": True}
 
 
+class PollEditBody(BaseModel):
+    question: str
+    options: list[str] = []
+
+
+@api.post("/tasks/{task_id}/poll_edit")
+async def edit_poll_draft(
+    task_id: int, body: PollEditBody, request: Request, owner: int = Depends(require_owner)
+):
+    """Ручное редактирование черновика опроса (вопрос+варианты) — без ИИ."""
+    from app.bot.flow import save_manual_poll_edit
+    question = body.question.strip()
+    options = [o.strip() for o in body.options if o.strip()]
+    if not question or len(options) < 2:
+        return {"ok": False, "message": "Нужен вопрос и минимум 2 варианта ответа."}
+    msg = await save_manual_poll_edit(request.app.state.bot, task_id, owner, question, options)
+    return {"ok": msg.startswith("Сохранено"), "message": msg}
+
+
 @api.post("/tasks/{task_id}/publish_now")
 async def publish_now(task_id: int, request: Request, owner: int = Depends(require_owner)):
     """Публикует одобренный пост в канал немедленно (не дожидаясь расписания)."""

@@ -399,6 +399,41 @@ async def generate_post_version(
     return version
 
 
+async def create_manual_version(
+    session: AsyncSession, task: ContentTask, *, text: str, user_id: int | None = None
+) -> GeneratedPost:
+    """Сохраняет вручную написанный текст как новую версию — без обращения к ИИ.
+
+    Используется для ручного редактирования опроса (вопрос+варианты) взамен
+    генерации через ИИ. Для опроса текст перед сохранением проверяется через
+    parse_poll_draft — так же, как и AI-сгенерированный, — чтобы битый вручную
+    введённый черновик не попал владельцу на одобрение.
+    """
+    if task.task_type == TaskType.POLL.value:
+        parse_poll_draft(text)
+
+    version = GeneratedPost(
+        task_id=task.id,
+        version_number=await _next_version_number(task),
+        text=text,
+        generation_prompt=None,
+        ai_provider="owner",
+        ai_model="",
+    )
+    session.add(version)
+    task.posts.append(version)
+    await session.flush()
+
+    await audit.log_action(
+        session,
+        task.id,
+        ApprovalAction.DRAFT_GENERATED.value,
+        user_id=user_id,
+        comment=f"kind=manual, version={version.version_number}",
+    )
+    return version
+
+
 def latest_post(task: ContentTask) -> GeneratedPost | None:
     return task.posts[-1] if task.posts else None
 

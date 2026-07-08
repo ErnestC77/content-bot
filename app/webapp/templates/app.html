@@ -276,6 +276,7 @@ function taskCard(t, pollsByPostId, nested) {
       <button class="act" onclick="doApprove(${t.id}, this)">✅ Одобрить</button>
       <button class="act sec" onclick="doRevise(${t.id})">✏️ Правки</button>
       <button class="act sec" onclick="doAlt(${t.id}, this)">🔄 Вариант</button>
+      ${isPoll ? `<button class="act sec" onclick="doEditPoll(${t.id})">✎ Изменить вручную</button>` : ""}
       <button class="act danger" onclick="doCancel(${t.id})">❌ Отмена</button>`;
   } else if (t.can_generate) {
     actions = `<button class="act" onclick="doGenerate(${t.id}, this)">⚙️ Задать вопросы</button>
@@ -470,6 +471,35 @@ async function doEdit(id){
       loadTasks();
     },
     fromQuestions ? { okLabel: "Сохранить и обновить вопросы", cancelLabel: "◀ Вернуться к вопросам" } : {});
+}
+
+function pollOptRow(value) {
+  return `<div class="poll-opt-row" style="display:flex;gap:6px;margin-bottom:4px">
+    <input class="poll-opt" value="${esc(value || "")}" style="flex:1">
+    <b onclick="this.parentElement.remove()" style="cursor:pointer;color:#c53030">✕</b>
+  </div>`;
+}
+function addPollOptRow() {
+  document.getElementById("pe-options").insertAdjacentHTML("beforeend", pollOptRow(""));
+}
+
+async function doEditPoll(id){
+  const t = await api(`/tasks/${id}`);
+  openModal("Изменить опрос вручную", `
+    <label>Вопрос</label><input id="pe-question" value="${esc(t.poll_question || "")}">
+    <label>Варианты ответа</label>
+    <div id="pe-options">${(t.poll_options || []).map(pollOptRow).join("")}</div>
+    <button class="act sec" type="button" onclick="addPollOptRow()" style="margin-top:6px">➕ Вариант</button>`,
+    async () => {
+      const question = document.getElementById("pe-question").value.trim();
+      const options = [...document.querySelectorAll("#pe-options .poll-opt")]
+        .map(el => el.value.trim()).filter(Boolean);
+      if (!question || options.length < 2) { tg.showAlert("Нужен вопрос и минимум 2 варианта ответа."); return; }
+      const res = await api(`/tasks/${id}/poll_edit`, "POST", { question, options });
+      if (!res.ok) { tg.showAlert(res.message || "Не удалось сохранить."); return; }
+      toast("Опрос обновлён ✓");
+      await loadTasks();
+    });
 }
 
 function doAddPoll(relatedId, relatedDate){
