@@ -20,8 +20,9 @@ from app.database.models import (
     ContentTask,
     MediaType,
     TaskStatus,
+    TaskType,
 )
-from app.services import audit
+from app.services import audit, content_tasks
 from app.services.media import TELEGRAM_CAPTION_LIMIT
 from app.services.settings_store import get_channel_id
 
@@ -156,6 +157,20 @@ async def _send_post(bot: Bot, channel_id: str, text: str, task: ContentTask) ->
     await bot.send_media_group(chat_id=channel_id, media=group)
 
 
+async def _send_poll(bot: Bot, channel_id: str, text: str, task: ContentTask) -> None:
+    """Публикует опрос: text — сериализованный черновик (вопрос + варианты,
+    см. content_tasks.parse_poll_draft). task не используется — параметр
+    только ради единой сигнатуры с _send_post (общая точка вызова в publish_task)."""
+    question, options = content_tasks.parse_poll_draft(text)
+    await bot.send_poll(
+        chat_id=channel_id,
+        question=question,
+        options=options,
+        is_anonymous=True,
+        allows_multiple_answers=False,
+    )
+
+
 def _truncate_at_word(text: str, limit: int) -> str:
     """Обрезает текст до limit символов по границе слова (не рвёт на полуслове)."""
     if len(text) <= limit:
@@ -234,9 +249,10 @@ async def publish_task(bot: Bot, session: AsyncSession, task: ContentTask) -> Pu
     await session.refresh(task)
 
     text = task.posts[-1].text
+    send = _send_poll if task.task_type == TaskType.POLL.value else _send_post
     try:
-        await _send_post(bot, channel_id, text, task)
-    except TelegramAPIError as exc:
+        await send(bot, channel_id, text, task)
+    except (TelegramAPIError, content_tasks.PollValidationError) as exc:
         logger.exception("Ошибка публикации в канал")
         task.status = TaskStatus.PUBLISH_FAILED.value
         await audit.log_action(
