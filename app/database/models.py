@@ -106,8 +106,8 @@ class ContentTask(Base):
     pending_questions: Mapped[str | None] = mapped_column(Text, nullable=True)
     # публиковать весь текст как цитату (Telegram blockquote)
     is_quote: Mapped[bool] = mapped_column(Boolean, default=False)
-    # либо отдельные строки текста — как цитаты (взаимоисключимо с is_quote);
-    # несколько выбранных строк хранятся через "\n", каждая — независимый фрагмент
+    # либо только этот фрагмент текста (может содержать несколько строк) —
+    # как цитата (взаимоисключимо с is_quote)
     quote_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     rubric: Mapped[str] = mapped_column(String(255), default="")
     # "post" — обычный текстовый/медиа-пост (по умолчанию), "poll" — опрос

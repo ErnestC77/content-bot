@@ -33,11 +33,6 @@
   .preview { font-size: 14px; color: var(--text); margin-top: 8px; white-space: pre-wrap;
              line-height: 1.4; max-height: 320px; overflow: auto;
              background: var(--bg); border-radius: 8px; padding: 10px; }
-  .quote-lines { font-size: 14px; margin-top: 8px; line-height: 1.5; max-height: 320px; overflow: auto;
-                 background: var(--bg); border-radius: 8px; padding: 10px; }
-  .quote-line { padding: 2px 6px; border-radius: 4px; cursor: pointer; white-space: pre-wrap; }
-  .quote-line.empty { cursor: default; }
-  .quote-line.selected { background: var(--btn); color: var(--btn-text); }
   .media-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .chip { font-size: 12px; background: var(--bg); border: 1px solid var(--hint); border-radius: 14px;
           padding: 4px 8px; display: flex; align-items: center; gap: 6px; }
@@ -232,50 +227,26 @@ function questionsBlock(t) {
 
 function canEditQuote(t) { return !["published", "cancelled", "publishing"].includes(t.status); }
 
-// taskId -> Set<lineIndex>; переживает перерисовки loadTasks(), пока страница открыта
-const quoteSelection = {};
-
 function postText(t) {
   if (!t.text) return "";
   if (!canEditQuote(t)) return `<div class="preview">${esc(t.text)}</div>`;
-  const lines = t.text.split("\n");
-  // тап по строке вместо drag-выделения — на тачскрине в WebView Telegram
-  // выделение мышью/пальцем через переносы строк ненадёжно сбрасывается
-  if (!quoteSelection[t.id]) {
-    const saved = t.quote_text ? t.quote_text.split("\n") : [];
-    quoteSelection[t.id] = new Set(lines.map((l, i) => i).filter(i => saved.includes(lines[i])));
-  }
-  const sel = quoteSelection[t.id];
-  const rendered = lines.map((line, i) => {
-    if (!line.trim()) return `<div class="quote-line empty">&nbsp;</div>`;
-    const cls = sel.has(i) ? "quote-line selected" : "quote-line";
-    return `<div class="${cls}" data-i="${i}" onclick="toggleQuoteLine(${t.id}, ${i})">${esc(line)}</div>`;
-  }).join("");
-  return `<div class="quote-lines" id="qlines-${t.id}">${rendered}</div>
+  // textarea вместо div — чтобы можно было выделить фрагмент текста (в т.ч.
+  // несколько строк) протягиванием мышью/пальцем, как обычный текст
+  return `<textarea class="preview" id="ptext-${t.id}" readonly rows="6">${esc(t.text)}</textarea>
     <div class="actions" style="margin-top:6px">
-      <button class="act sec" onclick="doMarkSelection(${t.id})">🔖 Сохранить выбранные строки как цитату</button>
+      <button class="act sec" onclick="doMarkSelection(${t.id})">🔖 Выделить как цитату</button>
     </div>`;
-}
-
-function toggleQuoteLine(id, i) {
-  const sel = quoteSelection[id] || (quoteSelection[id] = new Set());
-  if (sel.has(i)) sel.delete(i); else sel.add(i);
-  const el = document.querySelector(`#qlines-${id} [data-i="${i}"]`);
-  if (el) el.classList.toggle("selected");
 }
 
 function quoteToggle(t) {
   if (!canEditQuote(t)) {
     if (t.is_quote) return '<div class="meta">🔖 Вся цитата</div>';
-    if (t.quote_text) {
-      const preview = t.quote_text.split("\n").join(" / ");
-      return `<div class="meta">🔖 Цитата (${t.quote_text.split("\n").length} стр.): «${esc(preview.slice(0,40))}${preview.length>40?'…':''}»</div>`;
-    }
+    if (t.quote_text) return `<div class="meta">🔖 Цитата: «${esc(t.quote_text.slice(0,40))}${t.quote_text.length>40?'…':''}»</div>`;
     return "";
   }
   const fragmentNote = t.quote_text
-    ? (() => { const preview = t.quote_text.split("\n").join(" / "); return `<div class="meta" style="margin-top:6px">🔖 Цитата (${t.quote_text.split("\n").length} стр.): «${esc(preview.slice(0,50))}${preview.length>50?'…':''}»
-       <b onclick="doClearQuoteText(${t.id})" style="color:#c53030;cursor:pointer">✕ убрать</b></div>`; })()
+    ? `<div class="meta" style="margin-top:6px">🔖 Цитата: «${esc(t.quote_text.slice(0,50))}${t.quote_text.length>50?'…':''}»
+       <b onclick="doClearQuoteText(${t.id})" style="color:#c53030;cursor:pointer">✕ убрать</b></div>`
     : "";
   return `<label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;color:var(--hint)">
     <input type="checkbox" style="width:auto;margin:0" ${t.is_quote ? "checked" : ""} onchange="doToggleQuote(${t.id})"> 🔖 Вся цитата целиком
@@ -369,19 +340,19 @@ function doSkipAnswers(id, btn){
     await loadTasks();
   });
 }
-async function doToggleQuote(id){ delete quoteSelection[id]; await api(`/tasks/${id}/quote`, "POST"); toast("Сохранено"); await loadTasks(); }
+async function doToggleQuote(id){ await api(`/tasks/${id}/quote`, "POST"); toast("Сохранено"); await loadTasks(); }
 
 async function doMarkSelection(id){
-  const sel = quoteSelection[id];
-  if (!sel || !sel.size) { tg.showAlert("Сначала нажмите на строки, которые нужно выделить как цитату."); return; }
-  const container = document.getElementById(`qlines-${id}`);
-  const divs = [...container.children];
-  const fragment = [...sel].sort((a, b) => a - b).map(i => divs[i].textContent).join("\n");
+  const ta = document.getElementById(`ptext-${id}`);
+  if (!ta) return;
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  const fragment = ta.value.slice(start, end).trim();
+  if (!fragment) { tg.showAlert("Сначала выделите часть текста пальцем/мышью в поле поста, потом нажмите кнопку."); return; }
   await api(`/tasks/${id}/quote_text`, "POST", { quote_text: fragment });
   toast("Выделено как цитата ✓");
   await loadTasks();
 }
-async function doClearQuoteText(id){ delete quoteSelection[id]; await api(`/tasks/${id}/quote_text`, "POST", { quote_text: "" }); toast("Цитата снята"); await loadTasks(); }
+async function doClearQuoteText(id){ await api(`/tasks/${id}/quote_text`, "POST", { quote_text: "" }); toast("Цитата снята"); await loadTasks(); }
 function doCancel(id){ tg.showConfirm("Отменить задачу?", async ok => { if(ok){ await api(`/tasks/${id}/cancel`,"POST"); toast("Отменено"); await loadTasks(); } }); }
 function doDelete(id){ tg.showConfirm("Удалить задачу?", async ok => { if(ok){ await api(`/tasks/${id}/delete`,"POST"); toast("Удалено"); await loadTasks(); } }); }
 
