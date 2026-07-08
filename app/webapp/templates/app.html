@@ -258,8 +258,9 @@ function pollPreview(t) {
   return `<div class="preview">📊 <b>${esc(t.poll_question || "")}</b><br><br>${opts}</div>`;
 }
 
-function taskCard(t) {
+function taskCard(t, pollsByPostId, nested) {
   const isPoll = t.task_type === "poll";
+  const linkedPoll = (!isPoll && pollsByPostId) ? pollsByPostId[t.id] : null;
   let actions = "";
   if (t.can_approve) {
     actions = `
@@ -275,15 +276,21 @@ function taskCard(t) {
   if (t.can_publish) {
     actions += `<button class="act" onclick="doPublishNow(${t.id})">📢 Опубликовать сейчас</button>`;
   }
-  if (!isPoll && t.status !== "cancelled") {
+  // кнопка «добавить опрос» — только если к посту ещё не привязан ни один опрос,
+  // иначе вместо неё ниже показывается сам связанный опрос со своими действиями
+  // (правки/вариант/удаление) — так нельзя случайно наплодить несколько опросов
+  if (!isPoll && !linkedPoll && t.status !== "cancelled") {
     actions += `<button class="act sec" onclick="doAddPoll(${t.id}, '${t.publish_date}')">📊 Опрос к этому посту</button>`;
   }
   const body = isPoll ? pollPreview(t) : postText(t);
   const meta = (t.can_generate && t.draft_date)
     ? `#${t.id} · ✍️ черновик ${fmtDate(t.draft_date)} ${t.draft_time||""} → 📢 публикация ${fmtDate(t.publish_date)} ${t.publish_time||""}`
     : `#${t.id} · 📢 ${fmtDate(t.publish_date)} ${t.publish_time||""}`;
-  const relatedNote = t.related_topic
+  const relatedNote = (t.related_topic && !nested)
     ? `<div class="meta">🗳 к посту «${esc(t.related_topic)}»</div>` : "";
+  const nestedPoll = linkedPoll
+    ? `<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--hint)">${taskCard(linkedPoll, pollsByPostId, true)}</div>`
+    : "";
   return `<div class="card">
     <div class="top"><div><div class="topic">${isPoll ? "📊 " : ""}${esc(t.topic) || "(без темы)"}</div>
       <div class="meta">${meta}</div>${relatedNote}</div></div>
@@ -293,18 +300,43 @@ function taskCard(t) {
     ${isPoll ? "" : quoteToggle(t)}
     ${isPoll ? "" : mediaChips(t)}
     <div class="actions">${actions}</div>
+    ${nestedPoll}
   </div>`;
 }
 
 let lastReady = [];
+let lastPollsByPostId = {};
 let hideSent = false;
 
+// связывает опрос со своим постом: {postId -> pollTask}, чтобы на карточке
+// поста показать уже привязанный опрос вместо кнопки «добавить». Опрос
+// попадает в карту, только если его пост ещё активен (не отменён) — иначе
+// пост нигде не рендерится, и опрос показываем отдельной карточкой, а не
+// прячем совсем.
+function buildPollsByPostId(allTasks) {
+  const postsById = {};
+  for (const t of allTasks) if (t.task_type !== "poll") postsById[t.id] = t;
+  const map = {};
+  for (const t of allTasks) {
+    const post = t.task_type === "poll" ? postsById[t.related_task_id] : null;
+    if (post && post.status !== "cancelled") map[t.related_task_id] = t;
+  }
+  return map;
+}
+
+// опрос считается вложенным в карточку своего поста и не должен ещё раз
+// рендериться отдельной карточкой верхнего уровня в списке
+function isNestedPoll(t, pollsByPostId) {
+  return t.task_type === "poll" && t.related_task_id && pollsByPostId[t.related_task_id] === t;
+}
+
 function renderReady() {
-  const shown = hideSent ? lastReady.filter(t => t.status !== "published") : lastReady;
+  const shown = (hideSent ? lastReady.filter(t => t.status !== "published") : lastReady)
+    .filter(t => !isNestedPoll(t, lastPollsByPostId));
   const toggle = lastReady.some(t => t.status === "published")
     ? `<button class="act sec" style="margin-bottom:10px" onclick="toggleHideSent()">${hideSent ? "👁 Показать отправленные" : "🙈 Скрыть отправленные"}</button>`
     : "";
-  const list = shown.length ? shown.map(taskCard).join("") : '<div class="empty">Готовых постов нет</div>';
+  const list = shown.length ? shown.map(t => taskCard(t, lastPollsByPostId)).join("") : '<div class="empty">Готовых постов нет</div>';
   document.getElementById("tab-ready").innerHTML =
     monthCalendar(shown) + toggle + '<div class="section-h">Список</div>' + list;
 }
@@ -312,7 +344,9 @@ function toggleHideSent() { hideSent = !hideSent; renderReady(); }
 
 async function loadTasks() {
   const data = await api("/tasks");
-  const list = data.drafts.length ? data.drafts.map(taskCard).join("") : '<div class="empty">Черновиков нет</div>';
+  lastPollsByPostId = buildPollsByPostId([...data.drafts, ...data.ready, ...(data.cancelled || [])]);
+  const draftCards = data.drafts.filter(t => !isNestedPoll(t, lastPollsByPostId));
+  const list = draftCards.length ? draftCards.map(t => taskCard(t, lastPollsByPostId)).join("") : '<div class="empty">Черновиков нет</div>';
   document.getElementById("tab-drafts").innerHTML =
     monthCalendar(data.drafts, "draft_date") + '<div class="section-h">Список</div>' + list;
   lastReady = data.ready;
