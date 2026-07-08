@@ -1,7 +1,7 @@
 """Telegram Mini App: страница + JSON API. Авторизация — по initData (require_owner)."""
 
 import logging
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
-from app.database.models import ContentTask, TaskMedia, TaskStatus
+from app.database.models import ContentTask, TaskMedia, TaskStatus, TaskType
 from app.database.session import get_session, get_session_dependency
 from app.services import access, approval, content_tasks
 from app.services import media as media_service
@@ -87,6 +87,16 @@ def _task_dict(task: ContentTask, full: bool = False) -> dict:
         "can_publish": task.status in (TaskStatus.APPROVED.value, TaskStatus.PUBLISH_FAILED.value),
         "questions": task.pending_questions.split("\n") if task.pending_questions else [],
     }
+    data["task_type"] = task.task_type
+    data["related_task_id"] = task.related_task_id
+    data["related_topic"] = task.related_task.topic if task.related_task else ""
+    if task.task_type == TaskType.POLL.value:
+        poll_lines = [line.strip() for line in data["text"].splitlines() if line.strip()]
+        data["poll_question"] = poll_lines[0] if poll_lines else ""
+        data["poll_options"] = poll_lines[1:]
+    else:
+        data["poll_question"] = ""
+        data["poll_options"] = []
     if full:
         data["text"] = latest.text if latest else ""
         data["versions"] = [
@@ -143,6 +153,46 @@ async def bulk_add(body: BulkBody, session: AsyncSession = Depends(get_session_d
     )
     await session.commit()
     return {"created": len(created), "errors": errors}
+
+
+class AddPollBody(BaseModel):
+    topic: str
+    draft_date: str
+    draft_time: str = ""
+    related_task_id: int | None = None
+
+
+@api.post("/tasks/poll")
+async def add_poll(body: AddPollBody, session: AsyncSession = Depends(get_session_dependency)):
+    """Быстрое добавление одного опроса — кнопки «+ Опрос» и «Опрос к посту» в Mini App."""
+    topic = body.topic.strip()
+    if not topic:
+        return {"ok": False, "message": "Нужна тема опроса."}
+    s = get_settings()
+    raw = await get_setting(session, KEY_DEFAULT_PUBLISH_TIME, s.default_publish_time)
+    hh, mm = (int(x) for x in raw.split(":"))
+    default_t = time(hh, mm)
+    lead_raw = await get_setting(session, KEY_DRAFT_LEAD_DAYS, str(s.draft_lead_days))
+    try:
+        lead_days = max(0, int(lead_raw))
+    except ValueError:
+        lead_days = s.draft_lead_days
+    d = date.fromisoformat(body.draft_date)
+    t = _parse_hhmm(body.draft_time) or default_t
+    task = ContentTask(
+        draft_date=d,
+        draft_time=t,
+        publish_date=d + timedelta(days=lead_days),
+        publish_time=default_t,
+        topic=topic,
+        task_type=TaskType.POLL.value,
+        related_task_id=body.related_task_id,
+        status=TaskStatus.SCHEDULED.value,
+        is_active=True,
+    )
+    session.add(task)
+    await session.commit()
+    return {"ok": True, "id": task.id}
 
 
 class EditBody(BaseModel):
