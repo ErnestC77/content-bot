@@ -59,6 +59,11 @@ class UserRole(str, enum.Enum):
     ADMIN = "admin"
 
 
+class TaskType(str, enum.Enum):
+    POST = "post"
+    POLL = "poll"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -105,6 +110,14 @@ class ContentTask(Base):
     # несколько выбранных строк хранятся через "\n", каждая — независимый фрагмент
     quote_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     rubric: Mapped[str] = mapped_column(String(255), default="")
+    # "post" — обычный текстовый/медиа-пост (по умолчанию), "poll" — опрос
+    # (вопрос+варианты сериализованы в GeneratedPost.text, см. content_tasks.parse_poll_draft)
+    task_type: Mapped[str] = mapped_column(String(20), default=TaskType.POST.value, index=True)
+    # необязательная связь «опрос к посту N» — только для отображения в Mini App,
+    # одобрение и публикация у связанных задач полностью независимые
+    related_task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("content_tasks.id", ondelete="SET NULL"), nullable=True
+    )
     topic: Mapped[str] = mapped_column(String(500), default="")
     goal: Mapped[str] = mapped_column(String(500), default="")
     description: Mapped[str] = mapped_column(Text, default="")
@@ -124,6 +137,9 @@ class ContentTask(Base):
     )
 
     channel: Mapped[Channel | None] = relationship(lazy="selectin")
+    related_task: Mapped["ContentTask | None"] = relationship(
+        remote_side=[id], lazy="selectin", foreign_keys=[related_task_id]
+    )
     answers: Mapped[list["TaskAnswer"]] = relationship(
         back_populates="task", lazy="selectin", order_by="TaskAnswer.created_at"
     )
