@@ -75,20 +75,47 @@ def _wrap_quote(text: str) -> str:
     return f"<blockquote>{html.escape(text)}</blockquote>"
 
 
-def _render_quote(text: str, task: ContentTask) -> tuple[str, bool]:
-    """Строит текст для отправки с учётом цитаты. Возвращает (display, use_html).
+def _wrap_fragments(text: str, fragments: list[str]) -> str:
+    """Оборачивает несколько независимых цитат-фрагментов текста в отдельные
+    Telegram blockquote, остальной текст остаётся обычным.
 
-    Приоритет: quote_text (выделенный фрагмент — может содержать несколько
-    строк, если владелец протянул выделение через перенос строки; если ещё
-    встречается в текущем тексте) > is_quote (весь текст целиком) > обычный
-    текст без разметки.
+    Каждый фрагмент (может содержать несколько строк — владелец мог
+    протянуть выделение через перенос строки) ищется независимо через
+    str.find — если фрагмент встречается в посте несколько раз, берётся
+    первое вхождение. Если два найденных фрагмента пересекаются, второй
+    пропускается, чтобы не сломать HTML.
     """
-    fragment = (task.quote_text or "").strip()
-    if fragment and fragment in text:
+    spans: list[tuple[int, int]] = []
+    for fragment in fragments:
         idx = text.find(fragment)
-        before = html.escape(text[:idx])
-        after = html.escape(text[idx + len(fragment) :])
-        return before + _wrap_quote(fragment) + after, True
+        if idx == -1:
+            continue
+        end = idx + len(fragment)
+        if any(idx < e and s < end for s, e in spans):
+            continue
+        spans.append((idx, end))
+    spans.sort()
+
+    parts = []
+    cursor = 0
+    for start, end in spans:
+        parts.append(html.escape(text[cursor:start]))
+        parts.append(_wrap_quote(text[start:end]))
+        cursor = end
+    parts.append(html.escape(text[cursor:]))
+    return "".join(parts)
+
+
+def _render_quote(text: str, task: ContentTask) -> tuple[str, bool]:
+    """Строит текст для отправки с учётом цитат. Возвращает (display, use_html).
+
+    Приоритет: цитаты-фрагменты (task.quotes — каждая независимо оборачивается
+    в свой blockquote, если ещё встречается в текущем тексте) > is_quote (весь
+    текст целиком) > обычный текст без разметки.
+    """
+    fragments = [q.text.strip() for q in task.quotes if q.text and q.text.strip() in text]
+    if fragments:
+        return _wrap_fragments(text, fragments), True
     if task.is_quote:
         return _wrap_quote(text), True
     return text, False

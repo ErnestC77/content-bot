@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
-from app.database.models import ContentTask, TaskMedia, TaskStatus, TaskType
+from app.database.models import ContentTask, TaskMedia, TaskQuote, TaskStatus, TaskType
 from app.database.session import get_session, get_session_dependency
 from app.services import access, approval, content_tasks
 from app.services import media as media_service
@@ -80,7 +80,7 @@ def _task_dict(task: ContentTask, full: bool = False) -> dict:
         "text": task.final_text or (latest.text if latest else ""),
         "preview": (task.final_text or (latest.text if latest else ""))[:200],
         "is_quote": task.is_quote,
-        "quote_text": task.quote_text or "",
+        "quotes": [{"id": q.id, "text": q.text} for q in task.quotes],
         "can_approve": task.status == TaskStatus.WAITING_FOR_APPROVAL.value,
         "can_generate": task.status == TaskStatus.SCHEDULED.value,
         "can_answer": task.status == TaskStatus.WAITING_FOR_ANSWERS.value,
@@ -306,13 +306,14 @@ async def skip_answers(task_id: int, request: Request, owner: int = Depends(requ
 
 @api.post("/tasks/{task_id}/quote")
 async def toggle_quote(task_id: int, session: AsyncSession = Depends(get_session_dependency)):
-    """Переключает «вся цитата». Взаимоисключимо с фрагментом — сбрасывает quote_text."""
+    """Переключает «вся цитата». Взаимоисключимо с цитатами-фрагментами — сбрасывает их."""
     task = await content_tasks.get_task(session, task_id)
     if task is None:
         return {"error": "not found"}
     task.is_quote = not task.is_quote
     if task.is_quote:
-        task.quote_text = None
+        for quote in list(task.quotes):
+            await session.delete(quote)
     await session.commit()
     return {"ok": True, "is_quote": task.is_quote}
 
@@ -321,20 +322,30 @@ class QuoteTextBody(BaseModel):
     quote_text: str = ""
 
 
-@api.post("/tasks/{task_id}/quote_text")
-async def set_quote_text(
+@api.post("/tasks/{task_id}/quotes")
+async def add_quote(
     task_id: int, body: QuoteTextBody, session: AsyncSession = Depends(get_session_dependency)
 ):
-    """Сохраняет выделенный владельцем фрагмент как цитату. Пустая строка — снять."""
+    """Добавляет ещё одну независимую цитату-фрагмент к посту (не заменяет прежние)."""
     task = await content_tasks.get_task(session, task_id)
     if task is None:
         return {"error": "not found"}
     fragment = body.quote_text.strip()
-    task.quote_text = fragment or None
-    if fragment:
-        task.is_quote = False
+    if not fragment:
+        return {"ok": False, "message": "Пустой фрагмент."}
+    session.add(TaskQuote(task_id=task_id, text=fragment))
+    task.is_quote = False
     await session.commit()
-    return {"ok": True, "quote_text": task.quote_text or ""}
+    return {"ok": True}
+
+
+@api.post("/tasks/{task_id}/quotes/{quote_id}/delete")
+async def delete_quote(task_id: int, quote_id: int, session: AsyncSession = Depends(get_session_dependency)):
+    quote = await session.get(TaskQuote, quote_id)
+    if quote and quote.task_id == task_id:
+        await session.delete(quote)
+        await session.commit()
+    return {"ok": True}
 
 
 @api.post("/tasks/{task_id}/approve")

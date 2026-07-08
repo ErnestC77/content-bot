@@ -104,11 +104,9 @@ class ContentTask(Base):
     draft_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     # наводящие вопросы текущего раунда (по одному на строку), пока не отвечены
     pending_questions: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # публиковать весь текст как цитату (Telegram blockquote)
+    # публиковать весь текст как цитату (Telegram blockquote); взаимоисключимо
+    # с отдельными цитатами-фрагментами (см. TaskQuote/quotes)
     is_quote: Mapped[bool] = mapped_column(Boolean, default=False)
-    # либо только этот фрагмент текста (может содержать несколько строк) —
-    # как цитата (взаимоисключимо с is_quote)
-    quote_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     rubric: Mapped[str] = mapped_column(String(255), default="")
     # "post" — обычный текстовый/медиа-пост (по умолчанию), "poll" — опрос
     # (вопрос+варианты сериализованы в GeneratedPost.text, см. content_tasks.parse_poll_draft)
@@ -143,6 +141,9 @@ class ContentTask(Base):
     answers: Mapped[list["TaskAnswer"]] = relationship(
         back_populates="task", lazy="selectin", order_by="TaskAnswer.created_at"
     )
+    quotes: Mapped[list["TaskQuote"]] = relationship(
+        back_populates="task", lazy="selectin", order_by="TaskQuote.created_at"
+    )
     media: Mapped[list["TaskMedia"]] = relationship(
         back_populates="task", lazy="selectin", order_by="TaskMedia.sort_order"
     )
@@ -164,6 +165,24 @@ class TaskAnswer(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     task: Mapped[ContentTask] = relationship(back_populates="answers")
+
+
+class TaskQuote(Base):
+    """Один фрагмент текста поста, выделенный владельцем как цитата.
+
+    К посту можно привязать несколько независимых цитат — каждая нумеруется
+    в Mini App по порядку добавления (created_at); при публикации каждая
+    оборачивается в свой Telegram blockquote (см. publishing._render_quote).
+    """
+
+    __tablename__ = "task_quotes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("content_tasks.id"), index=True)
+    text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    task: Mapped[ContentTask] = relationship(back_populates="quotes")
 
 
 class TaskMedia(Base):

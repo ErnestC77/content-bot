@@ -234,23 +234,32 @@ function postText(t) {
   // несколько строк) протягиванием мышью/пальцем, как обычный текст
   return `<textarea class="preview" id="ptext-${t.id}" readonly rows="6">${esc(t.text)}</textarea>
     <div class="actions" style="margin-top:6px">
-      <button class="act sec" onclick="doMarkSelection(${t.id})">🔖 Выделить как цитату</button>
+      <button class="act sec" onclick="doMarkSelection(${t.id})">🔖 Добавить цитату</button>
     </div>`;
 }
 
+function quoteList(quotes, removable, taskId) {
+  return quotes.map((q, i) => {
+    const preview = `${i + 1}. «${esc(q.text.slice(0,50))}${q.text.length>50?'…':''}»`;
+    const remove = removable
+      ? ` <b onclick="doRemoveQuote(${taskId}, ${q.id})" style="color:#c53030;cursor:pointer">✕</b>` : "";
+    return `<div>${preview}${remove}</div>`;
+  }).join("");
+}
+
 function quoteToggle(t) {
+  const quotes = t.quotes || [];
   if (!canEditQuote(t)) {
     if (t.is_quote) return '<div class="meta">🔖 Вся цитата</div>';
-    if (t.quote_text) return `<div class="meta">🔖 Цитата: «${esc(t.quote_text.slice(0,40))}${t.quote_text.length>40?'…':''}»</div>`;
+    if (quotes.length) return `<div class="meta">🔖 Цитаты:${quoteList(quotes, false, t.id)}</div>`;
     return "";
   }
-  const fragmentNote = t.quote_text
-    ? `<div class="meta" style="margin-top:6px">🔖 Цитата: «${esc(t.quote_text.slice(0,50))}${t.quote_text.length>50?'…':''}»
-       <b onclick="doClearQuoteText(${t.id})" style="color:#c53030;cursor:pointer">✕ убрать</b></div>`
+  const quotesNote = quotes.length
+    ? `<div class="meta" style="margin-top:6px">🔖 Цитаты:${quoteList(quotes, true, t.id)}</div>`
     : "";
   return `<label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;color:var(--hint)">
     <input type="checkbox" style="width:auto;margin:0" ${t.is_quote ? "checked" : ""} onchange="doToggleQuote(${t.id})"> 🔖 Вся цитата целиком
-  </label>${fragmentNote}`;
+  </label>${quotesNote}`;
 }
 
 function pollPreview(t) {
@@ -382,11 +391,12 @@ async function doMarkSelection(id){
   const start = ta.selectionStart, end = ta.selectionEnd;
   const fragment = ta.value.slice(start, end).trim();
   if (!fragment) { tg.showAlert("Сначала выделите часть текста пальцем/мышью в поле поста, потом нажмите кнопку."); return; }
-  await api(`/tasks/${id}/quote_text`, "POST", { quote_text: fragment });
-  toast("Выделено как цитата ✓");
+  const res = await api(`/tasks/${id}/quotes`, "POST", { quote_text: fragment });
+  if (!res.ok) { tg.showAlert(res.message || "Не удалось добавить цитату."); return; }
+  toast("Цитата добавлена ✓");
   await loadTasks();
 }
-async function doClearQuoteText(id){ await api(`/tasks/${id}/quote_text`, "POST", { quote_text: "" }); toast("Цитата снята"); await loadTasks(); }
+async function doRemoveQuote(id, quoteId){ await api(`/tasks/${id}/quotes/${quoteId}/delete`, "POST"); toast("Цитата убрана"); await loadTasks(); }
 function doCancel(id){ tg.showConfirm("Отменить задачу?", async ok => { if(ok){ await api(`/tasks/${id}/cancel`,"POST"); toast("Отменено"); await loadTasks(); } }); }
 function doDelete(id){ tg.showConfirm("Удалить задачу?", async ok => { if(ok){ await api(`/tasks/${id}/delete`,"POST"); toast("Удалено"); await loadTasks(); } }); }
 
