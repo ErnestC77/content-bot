@@ -122,6 +122,9 @@ server {
     listen 80;
     server_name ${DOMAIN};
     location / {
+        # без этого — дефолт nginx 1 МБ, любое видео/фото крупнее уже режется
+        # 413 ещё до приложения (у которого свой лимит 45 МБ, см. MAX_UPLOAD в routes.py)
+        client_max_body_size 50M;
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
