@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -17,6 +18,10 @@ services:
 
   app:
     build: .
+    # без restart контейнеры не поднимались обратно после перезагрузки VDS
+    # (штатный ребут хоста -> SIGTERM -> exit 0 -> без политики так и остаются
+    # выключенными) — отсюда был 502 у nginx, пока контейнеры не подняли вручную
+    restart: unless-stopped
     # DATABASE_URL берётся ТОЛЬКО из .env — раньше здесь был захардкожен
     # postgres:postgres, который перебивал .env (explicit environment: приоритетнее
     # env_file:) и ломал подключение при других учётных данных БД (напр. на VDS-деплое).
